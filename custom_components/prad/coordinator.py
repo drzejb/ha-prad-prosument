@@ -100,10 +100,12 @@ class PradCoordinator(DataUpdateCoordinator[None]):
         self.lock = asyncio.Lock()
         self.store = PradStore(hass, STORAGE_VERSION, STORAGE_KEY, minor_version=STORAGE_MINOR)
         self.backup_store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, BACKUP_KEY)
+        self.prev_backup_store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, f"{BACKUP_KEY}_prev")
         self.settings: dict[str, SettingValue] = dict(SETTING_DEFAULTS)
         self.consumers: dict[str, str] = {}  # slug -> display name
         self.consumer_entities: dict[str, str] = {}  # slug -> entity_id
         self.engine = Engine(State(), {})
+        self._unloaded = False  # set on unload: later saves would overwrite the state of the new instance
 
     async def _async_update_data(self) -> None:
         return None
@@ -127,7 +129,7 @@ class PradCoordinator(DataUpdateCoordinator[None]):
                 state = State.from_dict(data["state"])
             except (KeyError, TypeError, ValueError, ArithmeticError, AttributeError) as err:
                 # Never overwrite data that cannot be read: keep a copy and refuse to start.
-                await self.backup_store.async_save(data)
+                await self.async_save_backup(data)
                 raise ConfigEntryError(f"Stored state of {DOMAIN} cannot be read: {err}") from err
             stored = data.get("settings")
             if isinstance(stored, dict):
@@ -140,7 +142,19 @@ class PradCoordinator(DataUpdateCoordinator[None]):
                         _LOGGER.warning("Invalid stored setting %s, using the default value", key)
         self.engine = Engine(state, dict(self.consumers))
 
-    async def async_save(self) -> None:
+    async def async_save_backup(self, data: dict[str, Any]) -> None:
+        """Keep two backups: the latest in BACKUP_KEY and the one before it in BACKUP_KEY_prev."""
+        previous = await self.backup_store.async_load()
+        if previous is not None:
+            await self.prev_backup_store.async_save(previous)
+        await self.backup_store.async_save(data)
+
+    def mark_unloaded(self) -> None:
+        self._unloaded = True
+
+    async def async_save(self, *, final: bool = False) -> None:
+        if self._unloaded and not final:
+            return
         await self.store.async_save(
             {
                 "state": self.engine.state.to_dict(),
@@ -148,9 +162,9 @@ class PradCoordinator(DataUpdateCoordinator[None]):
             }
         )
 
-    async def async_save_locked(self) -> None:
+    async def async_save_locked(self, *, final: bool = False) -> None:
         async with self.lock:
-            await self.async_save()
+            await self.async_save(final=final)
 
     # ---------------------------------------------------------- settings
 
@@ -201,8 +215,11 @@ class PradCoordinator(DataUpdateCoordinator[None]):
             return None
         if not math.isfinite(value):
             return None
-        if st.attributes.get(ATTR_UNIT_OF_MEASUREMENT) == "Wh":
+        unit = st.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+        if unit == "Wh":
             value /= 1000
+        elif unit == "MWh":
+            value *= 1000
         return value
 
     async def async_tick(self, now: datetime) -> None:
@@ -230,19 +247,19 @@ class PradCoordinator(DataUpdateCoordinator[None]):
             await self._async_fill_weather_for_closing(now)
         except Exception:  # noqa: BLE001 - closing must not wait for weather
             _LOGGER.warning("Weather for closing months could not be fetched, closing anyway")
-        async with self.lock:
-            self.engine.catch_up(now, self.tariff(), self.storage_before_cross(), self.limits())
-            unwritten = [row for row in self.engine.state.history if not row.csv_written]
-            # Store first (rows still csv_written=False), then CSV, then the flag.
-            # Saved unconditionally: catch_up may have frozen months without closing them.
-            await self.async_save()
-            if not unwritten:
-                return
-            for row in unwritten:
-                await self.hass.async_add_executor_job(self._write_csv, row)
-                row.csv_written = True
+        try:
+            async with self.lock:
+                self.engine.catch_up(now, self.tariff(), self.storage_before_cross(), self.limits())
+                unwritten = [row for row in self.engine.state.history if not row.csv_written]
+                # Store first (rows still csv_written=False), then CSV, then the flag.
+                # Saved unconditionally: catch_up may have frozen months without closing them.
                 await self.async_save()
-        self.async_update_listeners()
+                for row in unwritten:
+                    await self.hass.async_add_executor_job(self._write_csv, row)
+                    row.csv_written = True
+                    await self.async_save()
+        finally:
+            self.async_update_listeners()  # entities must reflect closed months even after a CSV failure
 
     async def async_fill_weather(self, days: list[date]) -> None:
         """Fill missing temperature and radiation for completed days (network outside the lock)."""

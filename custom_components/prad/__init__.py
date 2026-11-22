@@ -33,6 +33,11 @@ async def async_setup_entry(hass, entry) -> bool:
     from .const import PLATFORMS
     from .coordinator import PradCoordinator
 
+    from .logic.zones import is_free_day
+
+    # Prime the lazy `holidays` import in an executor thread, not in the event loop.
+    await hass.async_add_executor_job(is_free_day, dt_util.now().date())
+
     coordinator = PradCoordinator(hass, entry)
     await coordinator.async_load()
     entry.runtime_data = coordinator
@@ -100,5 +105,7 @@ async def async_unload_entry(hass, entry) -> bool:
     """Unload a config entry."""
     from .const import PLATFORMS
 
-    await entry.runtime_data.async_save_locked()
+    coordinator = entry.runtime_data
+    coordinator.mark_unloaded()  # in-flight tasks of this instance must not save any more
+    await coordinator.async_save_locked(final=True)
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
