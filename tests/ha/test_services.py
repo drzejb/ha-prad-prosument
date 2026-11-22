@@ -338,3 +338,41 @@ async def test_collect_weather_uses_archive_for_old_days(hass, aioclient_mock):
     assert sum(u.startswith(OPEN_METEO_ARCHIVE) for u in urls) == 1
     assert "start_date=2026-06-01" in next(u for u in urls if u.startswith(OPEN_METEO_ARCHIVE))
     assert "past_days=2" in next(u for u in urls if u.startswith(OPEN_METEO + "?"))
+
+
+async def test_collect_weather_fills_forecast_gaps_from_archive(hass, aioclient_mock):
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(
+        OPEN_METEO_ARCHIVE,
+        json={"daily": {"time": ["2026-09-01", "2026-09-02"], "shortwave_radiation_sum": [9.0, 8.0]}},
+    )
+    aioclient_mock.get(
+        OPEN_METEO,
+        json={"daily": {"time": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-11-20"],
+                        "shortwave_radiation_sum": [None, None, 6.0, 2.5]}},
+    )
+    from datetime import date
+
+    today = date(2026, 11, 22)
+    days = [date(2026, 9, 1), date(2026, 9, 2), date(2026, 9, 3), date(2026, 11, 20)]
+    found = await async_collect_weather(hass, None, {}, days, today)
+    assert found == {
+        "2026-09-01": {"radiation": 9.0},
+        "2026-09-02": {"radiation": 8.0},
+        "2026-09-03": {"radiation": 6.0},
+        "2026-11-20": {"radiation": 2.5},
+    }
+    archive = [str(c[1]) for c in aioclient_mock.mock_calls if str(c[1]).startswith(OPEN_METEO_ARCHIVE)]
+    assert len(archive) == 1
+    assert "start_date=2026-09-01" in archive[0] and "end_date=2026-09-02" in archive[0]
+
+
+async def test_collect_weather_does_not_ask_archive_for_last_week(hass, aioclient_mock):
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(OPEN_METEO_ARCHIVE, json={"daily": {"time": [], "shortwave_radiation_sum": []}})
+    aioclient_mock.get(OPEN_METEO, json={"daily": {"time": [], "shortwave_radiation_sum": []}})
+    from datetime import date
+
+    found = await async_collect_weather(hass, None, {}, [date(2026, 11, 20)], date(2026, 11, 22))
+    assert found == {}
+    assert not any(str(c[1]).startswith(OPEN_METEO_ARCHIVE) for c in aioclient_mock.mock_calls)

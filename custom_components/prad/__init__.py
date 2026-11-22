@@ -16,9 +16,12 @@ except ModuleNotFoundError:  # logic tests on Windows run without Home Assistant
 
 async def async_setup(hass, config) -> bool:
     """Set up the integration: register the services once."""
-    from .services import async_register_services
+    from importlib import import_module
 
-    async_register_services(hass)
+    # The services module imports `holidays`, whose import reads files: do it in the
+    # import executor, not in the event loop.
+    services = await hass.async_add_import_executor_job(import_module, f"{__name__}.services")
+    services.async_register_services(hass)
     return True
 
 

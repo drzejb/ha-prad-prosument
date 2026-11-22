@@ -20,6 +20,7 @@ OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 MAX_PAST_DAYS = 92  # Open-Meteo forecast endpoint limit
 ARCHIVE_AFTER_DAYS = 90  # days older than this come from the archive endpoint
+ARCHIVE_LAG_DAYS = 7  # the archive has no data for the last days; never ask it for them
 REQUEST_TIMEOUT = 20
 RETRY_DELAY = 2.0  # seconds between the two attempts
 
@@ -133,6 +134,14 @@ async def async_collect_weather(
         rads.update(await async_fetch_radiation_archive(hass, min(old_rad), max(old_rad)))
     if recent_rad:
         rads.update(await async_fetch_radiation(hass, (today - min(recent_rad)).days))
+        # The forecast endpoint does not always serve the full past_days range; ask the
+        # archive for the older days it left out.
+        gaps = [
+            d for d in recent_rad
+            if d.isoformat() not in rads and (today - d).days > ARCHIVE_LAG_DAYS
+        ]
+        if gaps:
+            rads.update(await async_fetch_radiation_archive(hass, min(gaps), max(gaps)))
     for d in need_rad:
         if d.isoformat() in rads:
             found.setdefault(d.isoformat(), {})["radiation"] = rads[d.isoformat()]
