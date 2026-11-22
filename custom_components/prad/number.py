@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 
 from homeassistant.components.number import NumberEntity, NumberMode
 
@@ -48,7 +49,7 @@ NUMBERS: tuple[NumberSpec, ...] = (
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
     coordinator: PradCoordinator = entry.runtime_data
-    async_add_entities(PradNumber(coordinator, spec) for spec in NUMBERS)
+    async_add_entities([*(PradNumber(coordinator, spec) for spec in NUMBERS), PradInvoiceAmount(coordinator)])
 
 
 class PradNumber(PradEntity, NumberEntity):
@@ -72,3 +73,26 @@ class PradNumber(PradEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_set_setting(self._key, value)
+
+
+class PradInvoiceAmount(PradEntity, NumberEntity):
+    """Invoice form: the amount to save (draft kept in memory, shows the stored invoice)."""
+
+    _attr_mode = NumberMode.BOX
+    _attr_icon = "mdi:receipt-text"
+    _attr_native_unit_of_measurement = "zł"
+    _attr_native_min_value = 0.0
+    _attr_native_max_value = 100000.0
+    _attr_native_step = 0.01
+
+    def __init__(self, coordinator: PradCoordinator) -> None:
+        super().__init__(coordinator, "number", "faktura_kwota")
+        self._attr_name = f"{NAME_PREFIX}faktura – kwota"
+
+    @property
+    def native_value(self) -> float | None:
+        amount = self.coordinator.invoice_form_amount()
+        return None if amount is None else float(amount)
+
+    async def async_set_native_value(self, value: float) -> None:
+        self.coordinator.set_invoice_amount(Decimal(str(value)))

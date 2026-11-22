@@ -50,7 +50,9 @@ data:
 
 Usługa zwraca odpowiedź (liczba godzin, przerwy, zamknięte miesiące, ostrzeżenia) – uruchom ją w Narzędziach deweloperskich → Akcje z zaznaczonym „Zwróć odpowiedź”. Przed przeliczeniem zapisuje kopię stanu.
 
-**`prad.wpisz_fakture`** – kwota z faktury za miesiąc (do porównania z modelem, encja `sensor.prad_model_vs_faktura`). Wpisz kwotę za energię, bez opłat dodatkowych (np. za płatność online).
+**Faktury z pulpitu**: karta „Wpisz fakturę” (encje `select.prad_faktura_miesiac`, `number.prad_faktura_kwota`, `button.prad_faktura_zapisz`). Wybierz miesiąc (domyślnie najnowszy bez faktury), wpisz kwotę i kliknij „Zapisz fakturę”. Po wybraniu miesiąca z fakturą pole pokazuje zapisaną kwotę – nową kwotą można ją poprawić.
+
+**`prad.wpisz_fakture`** – to samo jako usługa: kwota z faktury za miesiąc (do porównania z modelem, encja `sensor.prad_model_vs_faktura`). Wpisz kwotę za energię, bez opłat dodatkowych (np. za płatność online).
 
 ```yaml
 action: prad.wpisz_fakture

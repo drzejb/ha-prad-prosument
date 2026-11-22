@@ -31,6 +31,7 @@ from .const import (
     CONF_TEMP,
     CSV_CONSUMERS,
     CSV_DIR,
+    CSV_INVOICES,
     CSV_MONTHS,
     DOMAIN,
     RESERVED_SLUGS,
@@ -106,6 +107,9 @@ class PradCoordinator(DataUpdateCoordinator[None]):
         self.consumer_entities: dict[str, str] = {}  # slug -> entity_id
         self.engine = Engine(State(), {})
         self._unloaded = False  # set on unload: later saves would overwrite the state of the new instance
+        # Invoice form draft (select + number + button); in memory only, never stored.
+        self.invoice_month: str | None = None
+        self.invoice_amount: Decimal | None = None
 
     async def _async_update_data(self) -> None:
         return None
@@ -288,6 +292,59 @@ class PradCoordinator(DataUpdateCoordinator[None]):
         """Fill weather gaps of the last 7 completed days."""
         today = now.astimezone(TZ).date()
         await self.async_fill_weather([today - timedelta(days=n) for n in range(1, 8)])
+
+    # ------------------------------------------------------------ invoices
+
+    def history_months(self) -> list[str]:
+        """Closed months of the history, newest first."""
+        return sorted({row.month for row in self.engine.state.history}, reverse=True)
+
+    def _history_row(self, month: str | None) -> HistoryRow | None:
+        return next((row for row in self.engine.state.history if row.month == month), None)
+
+    def invoice_form_month(self) -> str | None:
+        """Chosen month, else the newest month without an invoice, else the newest month."""
+        months = self.history_months()
+        if self.invoice_month in months:
+            return self.invoice_month
+        for month in months:
+            row = self._history_row(month)
+            if row is not None and row.invoice is None:
+                return month
+        return months[0] if months else None
+
+    def invoice_form_amount(self) -> Decimal | None:
+        """Typed amount, else the invoice already stored for the form month."""
+        if self.invoice_amount is not None:
+            return self.invoice_amount
+        row = self._history_row(self.invoice_form_month())
+        return None if row is None else row.invoice
+
+    def select_invoice_month(self, month: str) -> None:
+        self.invoice_month = month
+        self.invoice_amount = None  # show the stored invoice of that month, if any
+        self.async_update_listeners()
+
+    def set_invoice_amount(self, amount: Decimal) -> None:
+        self.invoice_amount = amount
+        self.async_update_listeners()
+
+    async def async_set_invoice(self, month: str, amount: Decimal) -> None:
+        """Store the invoice of a closed month and append it to the invoices CSV.
+
+        Raises ValueError (unknown month, negative amount) and OSError (CSV write failed;
+        the invoice is already stored in that case).
+        """
+        async with self.lock:
+            self.engine.set_invoice(month, amount)
+            await self.async_save()  # Store first, so the invoice survives a CSV failure
+            path = Path(self.hass.config.path(CSV_DIR)) / CSV_INVOICES
+            try:
+                await self.hass.async_add_executor_job(
+                    csvio.append_invoice, path, month, amount, dt_util.now()
+                )
+            finally:
+                self.async_update_listeners()
 
     def _write_csv(self, row: HistoryRow) -> None:
         base = Path(self.hass.config.path(CSV_DIR))

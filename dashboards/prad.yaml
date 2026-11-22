@@ -94,6 +94,15 @@ views:
               {% set f = (r.invoice | float) if r.invoice is not none else none -%}
               | {{ r.month }} | {{ r.pobor_droga }}/{{ r.pobor_tania }} | {{ r.oddanie_droga }}/{{ r.oddanie_tania }} | {{ '%.2f' | format(m) }} | {{ '%.2f' | format(f) if f is not none else '–' }} | {{ '%+.2f' | format(m - f) if f is not none else '–' }} |
               {% endfor %}
+          - type: entities
+            title: Wpisz fakturę
+            entities:
+              - entity: select.prad_faktura_miesiac
+                name: Miesiąc
+              - entity: number.prad_faktura_kwota
+                name: Kwota z faktury
+              - entity: button.prad_faktura_zapisz
+                name: Zapisz fakturę
 
   - title: Porównania
     path: porownania

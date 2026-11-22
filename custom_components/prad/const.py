@@ -24,7 +24,7 @@ CSV_INVOICES = "prad_faktury.csv"
 
 NAME_PREFIX = "Prąd – "  # display-name prefix of every entity
 
-PLATFORMS = ["sensor", "binary_sensor", "number", "text", "switch", "select"]
+PLATFORMS = ["sensor", "binary_sensor", "number", "text", "switch", "select", "button"]
 
 # Key = tail of the setting entity_id (entities themselves come in Task 10).
 SETTING_DEFAULTS: dict[str, Decimal | str | bool | None] = {
