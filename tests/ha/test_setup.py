@@ -86,11 +86,12 @@ def _history_row(month: str):
     )
 
 
-async def test_close_pending_retries_unwritten_csv_row(hass, hass_storage):
+async def test_close_pending_retries_unwritten_csv_row(hass, hass_storage, tmp_path):
     from pathlib import Path
 
     from homeassistant.util import dt as dt_util
 
+    hass.config.config_dir = str(tmp_path)  # isolated dir: a second local run still writes
     entry = await _setup_entry(hass)
     coordinator = entry.runtime_data
     coordinator.engine.state.history.append(_history_row("2026-10"))
@@ -162,3 +163,29 @@ async def test_reserved_consumer_slug_skipped_on_load(hass):
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.runtime_data.consumers == {}
+
+
+async def test_options_flow_remove_then_readd_keeps_entity(hass):
+    from homeassistant.helpers import entity_registry as er
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    flow_id = result["flow_id"]
+    await _options_step(hass, flow_id, {"next_step_id": "add_consumer"})
+    await _options_step(hass, flow_id, {"name": "Pompa", "entity_id": "sensor.test_pump"})
+    res = await _options_step(hass, flow_id, {"next_step_id": "finish"})
+    assert res["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    registry = er.async_get(hass)
+    assert registry.async_get("sensor.prad_mc_odb_pompa") is not None
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    flow_id = result["flow_id"]
+    await _options_step(hass, flow_id, {"next_step_id": "remove_consumer"})
+    await _options_step(hass, flow_id, {"remove": "pompa"})
+    await _options_step(hass, flow_id, {"next_step_id": "add_consumer"})
+    await _options_step(hass, flow_id, {"name": "Pompa", "entity_id": "sensor.test_pump"})
+    res = await _options_step(hass, flow_id, {"next_step_id": "finish"})
+    assert res["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert registry.async_get("sensor.prad_mc_odb_pompa") is not None
