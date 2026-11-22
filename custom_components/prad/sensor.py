@@ -103,10 +103,10 @@ def _zone_specs(prefix: str, period: str) -> list[CounterSpec]:
 
 MONTH_SPECS: list[CounterSpec] = [
     *_zone_specs("mc", "w tym miesiącu"),
-    CounterSpec("mc_produkcja_pv", "produkcja PV w tym miesiącu", lambda c: c.pv, "pv"),
-    CounterSpec("mc_zuzycie_domu", "zużycie domu w tym miesiącu", _house, "pv"),
-    CounterSpec("mc_autokonsumpcja", "autokonsumpcja w tym miesiącu", _self, "pv"),
-    CounterSpec("mc_reszta", "reszta zużycia w tym miesiącu", _rest, "pv"),
+    CounterSpec("mc_produkcja_pv", "produkcja PV w tym miesiącu", lambda c: c.pv),
+    CounterSpec("mc_zuzycie_domu", "zużycie domu w tym miesiącu", _house),
+    CounterSpec("mc_autokonsumpcja", "autokonsumpcja w tym miesiącu", _self),
+    CounterSpec("mc_reszta", "reszta zużycia w tym miesiącu", _rest),
 ]
 
 DAY_SPECS: list[CounterSpec] = [

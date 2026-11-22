@@ -55,6 +55,19 @@ async def test_tick_updates_state(hass, freezer):
     assert state.months["2026-11"].import_peak == pytest.approx(1.3)
 
 
+async def test_tick_converts_wh_and_mwh_to_kwh(hass, freezer):
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = await _setup_entry(hass)
+    hass.states.async_set("sensor.test_import", "100000", {"unit_of_measurement": "Wh"})
+    hass.states.async_set("sensor.test_export", "0.05", {"unit_of_measurement": "MWh"})
+    await _tick_at(hass, freezer, "2026-11-23 10:00:10+01:00")
+    hass.states.async_set("sensor.test_import", "101500", {"unit_of_measurement": "Wh"})
+    hass.states.async_set("sensor.test_export", "0.0502", {"unit_of_measurement": "MWh"})
+    await _tick_at(hass, freezer, "2026-11-23 11:00:10+01:00")
+    counters = entry.runtime_data.engine.state.months["2026-11"]
+    assert counters.import_peak == pytest.approx(1.3)  # 1.5 kWh import, 0.2 kWh export
+
+
 async def test_state_persists_after_reload(hass, freezer):
     freezer.move_to("2026-11-23 09:30:00+01:00")
     entry = await _setup_entry(hass)
@@ -189,3 +202,17 @@ async def test_options_flow_remove_then_readd_keeps_entity(hass):
     assert res["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
     assert registry.async_get("sensor.prad_mc_odb_pompa") is not None
+
+
+async def test_unloaded_coordinator_does_not_save(hass, freezer, hass_storage):
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = await _setup_entry(hass)
+    coordinator = entry.runtime_data
+    await coordinator.async_save()
+    before = str(hass_storage["prad"]["data"])
+    coordinator.engine.state.storage_start = "2020-01"
+    coordinator.mark_unloaded()
+    await coordinator.async_save()
+    assert str(hass_storage["prad"]["data"]) == before
+    await coordinator.async_save(final=True)
+    assert "2020-01" in str(hass_storage["prad"]["data"])
