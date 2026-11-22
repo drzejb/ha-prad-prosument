@@ -43,7 +43,9 @@ async def _setup_entry(hass, tmp_path) -> MockConfigEntry:
     return entry
 
 
-async def _import_stats(hass, entity_id: str, step: float) -> None:
+async def _import_stats(
+    hass, entity_id: str, step: float, first: datetime = FIRST_HOUR, hours: int = HOURS
+) -> None:
     metadata = StatisticMetaData(
         mean_type=StatisticMeanType.NONE,
         has_sum=True,
@@ -54,8 +56,8 @@ async def _import_stats(hass, entity_id: str, step: float) -> None:
         unit_of_measurement="kWh",
     )
     stats = [
-        StatisticData(start=FIRST_HOUR + timedelta(hours=n), state=100 + step * n, sum=step * n)
-        for n in range(HOURS)
+        StatisticData(start=first + timedelta(hours=n), state=100 + step * n, sum=step * n)
+        for n in range(hours)
     ]
     async_import_statistics(hass, metadata, stats)
     await async_wait_recording_done(hass)
@@ -90,8 +92,8 @@ async def test_invoice_service_validation(hass, freezer, tmp_path):
     with pytest.raises(ServiceValidationError):  # month not in history
         await _call(hass, "wpisz_fakture", {"miesiac": "2026-10", "kwota": 100})
     entry.runtime_data.engine.state.history.append(_history_row("2026-10"))
-    await _call(hass, "wpisz_fakture", {"miesiac": "2026-10", "kwota": 447.37})
-    assert entry.runtime_data.engine.state.history[0].invoice == Decimal("447.37")
+    await _call(hass, "wpisz_fakture", {"miesiac": "2026-10", "kwota": 123.45})
+    assert entry.runtime_data.engine.state.history[0].invoice == Decimal("123.45")
     csv_text = (tmp_path / "prad" / "prad_faktury.csv").read_text(encoding="utf-8")
     assert "2026-10" in csv_text
     with pytest.raises(vol.Invalid):
@@ -148,15 +150,19 @@ async def test_inicjuj_keeps_older_history_and_inflows(hass, freezer, tmp_path, 
         hass, "inicjuj", {"od": "2026-11-23", "poczatek_magazynu": "2026-09", "potwierdz": True}
     )
     new = entry.runtime_data.engine.state
-    assert [r.month for r in new.history if r.month < "2026-11"] == ["2026-09"]
+    assert [r.month for r in new.history] == ["2026-09"]
     assert [i.month for i in new.inflows] == ["2026-09"]
     assert len(new.corrections) == 1
     assert new.storage_start == "2026-09"
 
 
-async def test_open_meteo_failure_is_tolerated(hass, aioclient_mock):
+async def test_open_meteo_failure_is_tolerated(hass, aioclient_mock, caplog):
     _mock_meteo(aioclient_mock, status=500)
     assert await async_fetch_radiation(hass, 5) == {}
+    assert aioclient_mock.call_count == 2  # one retry
+    assert "Open-Meteo request failed" in caplog.text
+    assert "open-meteo.com" not in caplog.text.lower()
+    assert "latitude" not in caplog.text.lower()
 
 
 async def test_open_meteo_parses_daily_values(hass, aioclient_mock):
@@ -165,3 +171,42 @@ async def test_open_meteo_parses_daily_values(hass, aioclient_mock):
         json={"daily": {"time": ["2026-11-24", "2026-11-25"], "shortwave_radiation_sum": [3.5, None]}},
     )
     assert await async_fetch_radiation(hass, 5) == {"2026-11-24": 3.5}
+
+
+async def test_inicjuj_across_month_end_is_idempotent(hass, freezer, tmp_path, hass_storage, aioclient_mock):
+    freezer.move_to("2026-11-02 12:00:00+01:00")
+    entry = await _setup_entry(hass, tmp_path)
+    first = datetime(2026, 10, 29, 22, 0, tzinfo=UTC)  # reference hour: 23:00 local on 29 October
+    last = datetime(2026, 11, 2, 10, 0, tzinfo=UTC)
+    hours = int((last - first) / timedelta(hours=1)) + 1
+    await _import_stats(hass, "sensor.test_import", 0.5, first, hours)
+    await _import_stats(hass, "sensor.test_export", 0.0, first, hours)
+    coordinator = entry.runtime_data
+    state = coordinator.engine.state
+    october = _history_row("2026-10")
+    october.invoice = Decimal("123.45")
+    october.csv_written = True
+    state.history.append(october)
+    state.inflows.append(Inflow("2026-09", Zone.PEAK, Decimal("5"), "2027-09"))
+    state.corrections.append({"time": "2026-10-31T10:00:00+01:00", "month": "2026-10", "amount": "3"})
+    for day in range(1, 32):  # every day of October seeded, so the closed row gets a temperature
+        state.weather[f"2026-10-{day:02d}"] = {"temp": 10.0, "radiation": 5.0}
+    data = {"od": "2026-10-30", "poczatek_magazynu": "2026-09", "potwierdz": True}
+
+    await _call(hass, "inicjuj", data)
+    backup = hass_storage["prad_backup"]["data"]["state"]
+    assert [h["month"] for h in backup["history"]] == ["2026-10"]  # the state before the rebuild
+    new = coordinator.engine.state
+    row = next(r for r in new.history if r.month == "2026-10")
+    assert row.invoice == Decimal("123.45")
+    assert row.temp_srednia == pytest.approx(10.0)
+    first_rows = [r.to_dict() for r in new.history]
+    first_inflows = list(new.inflows)
+
+    await _call(hass, "inicjuj", data)
+    again = coordinator.engine.state
+    assert [r.to_dict() for r in again.history] == first_rows
+    assert again.inflows == first_inflows
+    assert len(again.corrections) == 1
+    lines = (tmp_path / "prad" / "prad_miesiace.csv").read_text(encoding="utf-8").splitlines()
+    assert sum(1 for line in lines if "2026-10" in line) == 1

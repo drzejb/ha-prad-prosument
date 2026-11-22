@@ -22,7 +22,7 @@ wpisz_fakture:
         text:
     kwota:
       required: true
-      example: 447.37
+      example: 123.45
       selector:
         number:
           min: 0

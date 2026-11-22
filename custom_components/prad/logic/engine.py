@@ -322,6 +322,13 @@ class Engine:
             raise ValueError("Wpływ już wygasł")
         if amount == 0:
             raise ValueError("Ilość nie może być zerem")
+        self._apply_correction(amount, month)
+        self.state.corrections.append(
+            {"time": now.astimezone(TZ).isoformat(), "month": month, "amount": str(amount)}
+        )
+
+    def _apply_correction(self, amount: Decimal, month: str) -> None:
+        """Change the inflows by `amount` kWh; no validation of the month, no log entry."""
         st = self.state
         if amount > 0:
             st.inflows.append(Inflow(month, Zone.PEAK, amount, add_months(month, 12)))
@@ -338,9 +345,6 @@ class Engine:
                 if left > 0:
                     kept.append(Inflow(inflow.month, inflow.zone, left, inflow.valid_until))
             st.inflows = kept
-        st.corrections.append(
-            {"time": now.astimezone(TZ).isoformat(), "month": month, "amount": str(amount)}
-        )
 
     def set_invoice(self, month: str, amount: Decimal) -> HistoryRow:
         if amount < 0:

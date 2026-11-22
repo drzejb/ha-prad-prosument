@@ -39,7 +39,7 @@ def _row() -> HistoryRow:
         oplaty_stale=D("48.55"), koszt_netto=D("365.00"), koszt_razem=D("448.85"),
         zuzycie_domu=1.5, produkcja_pv=2.5, autokonsumpcja=1.0, reszta=0.5,
         temp_srednia=9.5, stopniodni=250.0, naslonecznienie_mj=None, wersja_cennika="v1",
-        consumers={"sauna": 1.0}, consumers_missing={"sauna": 2}, invoice=D("447.37"), csv_written=True,
+        consumers={"sauna": 1.0}, consumers_missing={"sauna": 2}, invoice=D("123.45"), csv_written=True,
     )
 
 
@@ -58,6 +58,7 @@ def _full_state() -> State:
         storage_start="2026-11",
         weather={"2026-11-23": {"temp": 3.5, "radiation": None}},
         last_tick=t,
+        rebuild_base={"od": "2026-11-23", "inflows": [{"month": "2026-10", "zone": "droga", "amount": "2", "valid_until": "2027-10"}]},
     )
 
 
@@ -65,7 +66,7 @@ def test_state_roundtrip():
     original = _full_state()
     restored = State.from_dict(json.loads(json.dumps(original.to_dict())))
     assert restored == original
-    assert restored.history[0].invoice == D("447.37")
+    assert restored.history[0].invoice == D("123.45")
     assert restored.inflows[0].zone is Zone.OFFPEAK
 
 
@@ -78,3 +79,9 @@ def test_empty_state_roundtrip_defaults():
 def test_unsupported_schema():
     with pytest.raises(ValueError, match="unsupported schema"):
         State.from_dict({"schema": 2})
+
+
+def test_state_without_rebuild_base_loads_as_none():
+    data = State().to_dict()
+    del data["rebuild_base"]
+    assert State.from_dict(data).rebuild_base is None

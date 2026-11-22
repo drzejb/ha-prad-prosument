@@ -67,9 +67,13 @@ async def _set_invoice(call: ServiceCall) -> None:
             coordinator.engine.set_invoice(month, amount)
         except ValueError as err:
             raise ServiceValidationError(str(err)) from err
+        await coordinator.async_save()  # Store first, so the invoice survives a CSV failure
         path = Path(call.hass.config.path(CSV_DIR)) / CSV_INVOICES
-        await call.hass.async_add_executor_job(csvio.append_invoice, path, month, amount, dt_util.now())
-        await coordinator.async_save()
+        try:
+            await call.hass.async_add_executor_job(csvio.append_invoice, path, month, amount, dt_util.now())
+        except OSError as err:
+            coordinator.async_update_listeners()
+            raise ServiceValidationError("Faktura zapisana, ale nie udało się dopisać do pliku CSV") from err
     coordinator.async_update_listeners()
 
 
@@ -82,7 +86,8 @@ async def _rebuild(call: ServiceCall) -> None:
         raise ServiceValidationError("Data początkowa z przyszłości")
     start = datetime.combine(day, time(0), tzinfo=TZ)
     async with coordinator.lock:
-        if coordinator.engine.state.history and not call.data["potwierdz"]:
+        st = coordinator.engine.state
+        if (st.history or st.inflows or st.corrections) and not call.data["potwierdz"]:
             raise ServiceValidationError("Historia istnieje – wywołaj z potwierdz: true")
         await async_rebuild(call.hass, coordinator, start, call.data["poczatek_magazynu"])
 

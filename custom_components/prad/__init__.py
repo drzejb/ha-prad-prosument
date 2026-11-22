@@ -1,6 +1,10 @@
 """Prad - net-metering prosumer integration for Home Assistant."""
 from __future__ import annotations
 
+import logging
+
+_LOGGER = logging.getLogger(__name__)
+
 CONFIG_SCHEMA = None
 try:
     from homeassistant.helpers import config_validation as cv
@@ -54,7 +58,13 @@ async def async_setup_entry(hass, entry) -> bool:
 
     def _start_weather(now) -> None:
         # Background task: cancelled automatically when the entry unloads.
-        entry.async_create_background_task(hass, coordinator.async_update_weather(now), "prad weather")
+        async def _run() -> None:
+            try:
+                await coordinator.async_update_weather(now)
+            except Exception:  # noqa: BLE001 - a weather failure must not surface as a task error
+                _LOGGER.warning("Weather update failed")
+
+        entry.async_create_background_task(hass, _run(), "prad weather")
 
     async def _started(_hass) -> None:
         now = dt_util.now()
