@@ -344,3 +344,13 @@ def test_close_requires_earlier_months_closed():
     e.state.pending.pop("2026-11")
     with pytest.raises(ValueError):
         e.close_month("2026-12", dt(2027, 1, 1, 1), LIM)
+
+
+def test_apply_correction_changes_inflows_without_log_entry():
+    e = engine()
+    e._apply_correction(D("10"), "2026-12")
+    e._apply_correction(D("-4"), "2026-12")
+    assert e.storage_kwh() == D("6") and e.state.corrections == []
+    with pytest.raises(ValueError):
+        e._apply_correction(D("-7"), "2026-12")
+    assert e.storage_kwh() == D("6")

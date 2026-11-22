@@ -16,7 +16,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import CONF_EXPORT, CONF_IMPORT, CONF_PV, CONF_TEMP
 from .logic.engine import Engine
-from .logic.state import State
+from .logic.state import State, inflow_from_dict, inflow_to_dict
 from .logic.zones import TZ, month_key
 from .weather import async_collect_weather, merge_weather
 
@@ -74,7 +74,16 @@ async def async_rebuild(
     new = State(storage_start=storage_start)
     new.history = [copy.deepcopy(r) for r in old.history if r.month < from_month]
     new.last_closed = max((r.month for r in new.history), default=None)
-    new.inflows = [i for i in old.inflows if i.month < from_month]
+    od_key = start.date().isoformat()
+    if old.rebuild_base and old.rebuild_base.get("od") == od_key:
+        # Repeated rebuild: start from the same inflows as the first time (no drift).
+        base = [inflow_from_dict(d) for d in old.rebuild_base["inflows"]]
+    else:
+        base = [i for i in old.inflows if i.month < from_month]
+    new.inflows = list(base)
+    new.rebuild_base = {"od": od_key, "inflows": [inflow_to_dict(i) for i in base]}
+    if start.day != 1 and any(r.month == from_month for r in old.history):
+        _LOGGER.warning("Month %s will be replaced by a partial month starting on %s", from_month, od_key)
     new.corrections = [dict(c) for c in old.corrections]
     new.weather = copy.deepcopy(old.weather)
     invoices = {r.month: r.invoice for r in old.history if r.month >= from_month and r.invoice is not None}
@@ -113,16 +122,32 @@ async def async_rebuild(
         if hours % _YIELD_EVERY == 0:
             await asyncio.sleep(0)
 
+    # Corrections for months from the start date: replay in their original order.
+    for corr in old.corrections:
+        if corr.get("month", "") < from_month:
+            continue
+        try:
+            engine._apply_correction(Decimal(str(corr["amount"])), corr["month"])  # noqa: SLF001
+        except (ValueError, KeyError, ArithmeticError):
+            _LOGGER.warning("Storage correction %s kWh for %s skipped in rebuild", corr.get("amount"), corr.get("month"))
+    new.corrections = [dict(c) for c in old.corrections]
+
     for row in new.history:
         if row.month in invoices:
-            row.invoice = invoices[row.month]
+            row.invoice = invoices.pop(row.month)
+    if invoices:
+        _LOGGER.warning("Invoices of months not closed by the rebuild were dropped: %s", sorted(invoices))
 
     coordinator.engine = engine
     await coordinator.async_save()
-    for row in [r for r in new.history if not r.csv_written]:
-        await hass.async_add_executor_job(coordinator._write_csv, row)  # noqa: SLF001
-        row.csv_written = True
-        await coordinator.async_save()
+    try:
+        for row in [r for r in new.history if not r.csv_written]:
+            await hass.async_add_executor_job(coordinator._write_csv, row)  # noqa: SLF001
+            row.csv_written = True
+            await coordinator.async_save()
+    except OSError as err:
+        coordinator.async_update_listeners()  # state is already swapped and saved
+        raise ServiceValidationError("Nie udało się zapisać pliku CSV; spróbuj ponownie") from err
     coordinator.async_update_listeners()
     _LOGGER.info("Rebuild finished: %d hours, %d gaps, closed months: %s", hours, gaps, closed or "none")
     return {"hours": hours, "gaps": gaps, "closed": closed}

@@ -1,6 +1,7 @@
 """Persistent integration state (JSON-serialisable). Pure Python, no Home Assistant imports."""
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from decimal import Decimal
@@ -167,6 +168,10 @@ def _inflow_from_dict(d: dict[str, Any]) -> Inflow:
     return Inflow(d["month"], Zone(d["zone"]), Decimal(str(d["amount"])), d["valid_until"])
 
 
+inflow_to_dict = _inflow_to_dict
+inflow_from_dict = _inflow_from_dict
+
+
 @dataclass
 class State:
     schema: int = SCHEMA
@@ -181,6 +186,8 @@ class State:
     storage_start: str = "2026-11"
     weather: dict[str, dict] = field(default_factory=dict)
     last_tick: datetime | None = None
+    # Pre-rebuild inflows kept so that repeating prad.inicjuj with the same start gives the same result.
+    rebuild_base: dict | None = None  # {"od": "YYYY-MM-DD", "inflows": [inflow dicts]}
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -196,6 +203,7 @@ class State:
             "storage_start": self.storage_start,
             "weather": {k: dict(v) for k, v in self.weather.items()},
             "last_tick": self.last_tick.isoformat() if self.last_tick else None,
+            "rebuild_base": copy.deepcopy(self.rebuild_base),
         }
 
     @classmethod
@@ -219,4 +227,5 @@ class State:
             storage_start=d.get("storage_start", "2026-11"),
             weather={k: dict(v) for k, v in d.get("weather", {}).items()},
             last_tick=_dt(last_tick) if last_tick else None,
+            rebuild_base=copy.deepcopy(d.get("rebuild_base")),
         )
