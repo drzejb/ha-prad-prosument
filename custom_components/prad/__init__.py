@@ -18,6 +18,7 @@ async def async_setup(hass, config) -> bool:
 async def async_setup_entry(hass, entry) -> bool:
     """Set up Prad from a config entry."""
     from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+    from homeassistant.core import CoreState
     from homeassistant.helpers.event import async_track_time_change
     from homeassistant.helpers.start import async_at_started
     from homeassistant.util import dt as dt_util
@@ -30,7 +31,7 @@ async def async_setup_entry(hass, entry) -> bool:
     entry.runtime_data = coordinator
 
     async def _tick(now) -> None:
-        if not hass.is_running:
+        if hass.state is not CoreState.running:
             return
         await coordinator.async_tick(now)
 
@@ -39,7 +40,7 @@ async def async_setup_entry(hass, entry) -> bool:
         coordinator.async_update_listeners()
 
     async def _close(now) -> None:
-        if not hass.is_running:
+        if hass.state is not CoreState.running:
             return
         await coordinator.async_close_pending(now)
 
