@@ -11,7 +11,10 @@ except ModuleNotFoundError:  # logic tests on Windows run without Home Assistant
 
 
 async def async_setup(hass, config) -> bool:
-    """Set up the integration (services are registered here in Task 11)."""
+    """Set up the integration: register the services once."""
+    from .services import async_register_services
+
+    async_register_services(hass)
     return True
 
 
@@ -44,9 +47,15 @@ async def async_setup_entry(hass, entry) -> bool:
             return
         await coordinator.async_close_pending(now)
 
+    async def _weather(now) -> None:
+        if hass.state is not CoreState.running:
+            return
+        await coordinator.async_update_weather(now)
+
     async def _started(_hass) -> None:
         now = dt_util.now()
         await coordinator.async_tick(now)
+        await coordinator.async_update_weather(now)
         await coordinator.async_close_pending(now)
 
     async def _stop(_event) -> None:
@@ -56,7 +65,8 @@ async def async_setup_entry(hass, entry) -> bool:
     entry.async_on_unload(async_track_time_change(hass, _refresh, minute=0, second=0))
     entry.async_on_unload(async_track_time_change(hass, _close, hour=1, minute=0, second=30))
     entry.async_on_unload(async_track_time_change(hass, _close, minute=5, second=0))
-    # Task 11: daily weather fetch at 00:30 (async_track_time_change(hour=0, minute=30)).
+    entry.async_on_unload(async_track_time_change(hass, _weather, hour=0, minute=30, second=0))
+    entry.async_on_unload(async_track_time_change(hass, _weather, minute=20, second=0))
     unsub_started = async_at_started(hass, _started)
     if unsub_started is not None:
         entry.async_on_unload(unsub_started)
