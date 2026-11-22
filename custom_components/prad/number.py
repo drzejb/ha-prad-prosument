@@ -99,4 +99,7 @@ class PradInvoiceAmount(PradEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         if not math.isfinite(value):
             raise ServiceValidationError("Liczba musi być skończona")
-        self.coordinator.set_invoice_amount(Decimal(str(value)))
+        try:
+            self.coordinator.set_invoice_amount(Decimal(str(value)))
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
