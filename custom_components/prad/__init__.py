@@ -33,10 +33,11 @@ async def async_setup_entry(hass, entry) -> bool:
     from .const import PLATFORMS
     from .coordinator import PradCoordinator
 
-    from .logic.zones import is_free_day
+    from .logic.zones import _holidays
 
-    # Prime the lazy `holidays` import in an executor thread, not in the event loop.
-    await hass.async_add_executor_job(is_free_day, dt_util.now().date())
+    # Load the `holidays` calendar for the current year in an executor thread, not in the
+    # event loop (is_free_day returns early on weekends and would not load it).
+    await hass.async_add_executor_job(_holidays, dt_util.now().year)
 
     coordinator = PradCoordinator(hass, entry)
     await coordinator.async_load()
