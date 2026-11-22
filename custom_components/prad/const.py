@@ -22,6 +22,8 @@ CSV_MONTHS = "prad_miesiace.csv"
 CSV_CONSUMERS = "prad_odbiorniki.csv"
 CSV_INVOICES = "prad_faktury.csv"
 
+NAME_PREFIX = "Prąd – "  # display-name prefix of every entity
+
 PLATFORMS = ["sensor", "binary_sensor", "number", "text", "switch", "select"]
 
 # Key = tail of the setting entity_id (entities themselves come in Task 10).
