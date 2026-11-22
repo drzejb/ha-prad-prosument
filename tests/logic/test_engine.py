@@ -51,6 +51,8 @@ def test_net_export_hour():
 
 def test_missing_hours_counted_for_unavailable_consumer():
     e = engine({"sauna": "Sauna"})
+    e.state.refs["fox"] = TrackerRef(dt(2026, 11, 23, 9), (0.0, 0.0))
+    e.state.refs["sauna"] = TrackerRef(dt(2026, 11, 23, 9), (0.0,))
     e.on_tick(dt(2026, 11, 23, 10, 0, 10), None, None, {"sauna": None}, LIM)
     assert e.state.months["2026-11"].missing_hours == {"fox": 1, "sauna": 1}
     assert e.state.days["2026-11-23"].missing_hours == {"fox": 1, "sauna": 1}
@@ -61,6 +63,7 @@ def test_missing_hours_counted_for_unavailable_consumer():
 
 def test_missing_hour_counted_once():
     e = engine({"sauna": "Sauna"})
+    e.state.refs["sauna"] = TrackerRef(dt(2026, 11, 23, 9), (0.0,))
     e.on_tick(dt(2026, 11, 23, 10, 0, 10), (1.0, 0.0), None, {"sauna": None}, LIM)
     e.on_tick(dt(2026, 11, 23, 10, 30), (1.0, 0.0), None, {"sauna": None}, LIM)
     assert e.state.months["2026-11"].missing_hours["sauna"] == 1
@@ -73,10 +76,16 @@ def test_gap_over_month_boundary_closes_after_data():
     e.state.refs["fox"] = TrackerRef(dt(2026, 11, 30, 23), (0.0, 0.0))
     e.state.months["2026-11"] = Counters()
     assert e.months_ready_to_freeze(dt(2026, 12, 1, 1, 30)) == []
+    assert e.catch_up(dt(2026, 12, 1, 1, 30), T, False, LIM) == [] and e.state.history == []
+    assert "2026-11" in e.state.months
     e.on_tick(dt(2026, 12, 1, 2, 0, 10), (3.0, 0.0), None, {}, LIM)
     assert e.state.months["2026-11"].import_offpeak == pytest.approx(1.0)
     assert e.state.months["2026-12"].import_offpeak == pytest.approx(2.0)
     assert e.months_ready_to_freeze(dt(2026, 12, 1, 2, 0, 10)) == ["2026-11"]
+    rows = e.catch_up(dt(2026, 12, 1, 2, 0, 10), T, False, LIM)
+    assert [r.month for r in rows] == ["2026-11"]
+    assert rows[0].pobor_tania == D("1") and rows[0].pobor_droga == D("0")
+    assert e.state.months["2026-12"].import_offpeak == pytest.approx(2.0)
 
 
 def test_pv_zero_treated_as_unavailable():
@@ -85,7 +94,7 @@ def test_pv_zero_treated_as_unavailable():
     warnings = e.on_tick(dt(2026, 11, 23, 11, 0, 10), None, 0.0, {}, LIM)
     assert warnings == []
     assert e.state.refs["pv"].time == dt(2026, 11, 23, 10) and e.state.refs["pv"].values == (500.0,)
-    assert "pv" not in e.state.months["2026-11"].missing_hours
+    assert "pv" not in e.state.months.get("2026-11", Counters()).missing_hours
 
 
 def test_secondary_tracker_hours_for_frozen_month():
@@ -109,7 +118,10 @@ def test_close_uses_frozen_tariff():
     e.state.months["2026-11"] = Counters(import_peak=100.0)
     e.state.refs["fox"] = TrackerRef(dt(2026, 12, 1), (0.0, 0.0))
     e.freeze_month("2026-11", T, False)
-    row = e.close_month("2026-11", dt(2026, 12, 1, 1), LIM)
+    new_tariff = replace(T, energy_peak=D("9"), version="new")
+    rows = e.catch_up(dt(2026, 12, 1, 1), new_tariff, False, LIM)
+    assert len(rows) == 1
+    row = rows[0]
     expected = compute_amounts(
         {Zone.PEAK: D("100"), Zone.OFFPEAK: D("0")}, {Zone.PEAK: D("100"), Zone.OFFPEAK: D("0")}, T
     ).gross
@@ -304,3 +316,31 @@ def test_on_tick_trims_days_weather_and_marks():
     assert "2024-01-01" not in e.state.weather and "2025-10-20" in e.state.weather
     assert all(not mk.startswith("sauna|") for mk in e.state.months["2026-11"].missing_marks)
     assert e.state.months["2026-11"].missing_hours["sauna"] == 1
+
+
+def test_missing_not_counted_without_started_tracker():
+    e = engine({"sauna": "Sauna"})
+    e.on_tick(dt(2026, 12, 1, 0, 30), (1.0, 0.0), None, {"sauna": None}, LIM)
+    assert e.state.months == {} and e.state.days == {}
+    assert e.catch_up(dt(2026, 12, 1, 2), T, False, LIM) == [] and e.state.history == []
+
+
+def test_missing_not_counted_for_already_accounted_hour():
+    e = engine()
+    e.state.refs["fox"] = TrackerRef(dt(2026, 11, 23, 9), (0.0, 0.0))
+    e.on_tick(dt(2026, 11, 23, 10, 0, 10), (1.0, 0.0), None, {}, LIM)
+    e.on_tick(dt(2026, 11, 23, 10, 30), None, None, {}, LIM)
+    assert e.state.months["2026-11"].missing_hours.get("fox", 0) == 0
+
+
+def test_close_requires_earlier_months_closed():
+    e = engine()
+    e.state.pending["2026-11"] = pending("2026-11")
+    e.state.pending["2026-12"] = pending("2026-12")
+    with pytest.raises(ValueError):
+        e.close_month("2026-12", dt(2027, 1, 1, 1), LIM)
+    assert "2026-12" in e.state.pending and e.state.history == []
+    e.state.months["2026-10"] = Counters()
+    e.state.pending.pop("2026-11")
+    with pytest.raises(ValueError):
+        e.close_month("2026-12", dt(2027, 1, 1, 1), LIM)

@@ -35,6 +35,11 @@ def _floor_hour_utc(moment: datetime) -> datetime:
     return utc.replace(minute=0, second=0, microsecond=0)
 
 
+def floor_hour(moment: datetime) -> datetime:
+    """Floor to the full hour, returned in TZ."""
+    return _floor_hour_utc(moment).astimezone(TZ)
+
+
 def advance(
     ref: TrackerRef | None,
     now: datetime,

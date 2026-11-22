@@ -8,7 +8,7 @@ import copy
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from . import climate
@@ -16,7 +16,7 @@ from .amounts import Totals, compute_amounts
 from .settlement import Inflow, Settlement, settle
 from .state import Counters, HistoryRow, PendingClose, State, to_decimal
 from .tariff import Tariff
-from .tracker import HourDelta, advance
+from .tracker import HourDelta, advance, floor_hour
 from .zones import (
     TZ, Zone, add_months, day_key, days_in_month, month_key, month_start, next_month_key, zone_at,
 )
@@ -42,11 +42,6 @@ class Snapshot:
     settlement: Settlement
     totals: Totals
     counters: Counters
-
-
-def _floor_hour(moment: datetime) -> datetime:
-    utc = moment.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    return utc.astimezone(TZ)
 
 
 def _decimals(peak: float, offpeak: float) -> dict[Zone, Decimal]:
@@ -151,7 +146,11 @@ class Engine:
         return month_c, None if too_old else st.days.setdefault(d, Counters())
 
     def _mark_missing(self, key: str, now: datetime) -> None:
-        hour = _floor_hour(now) - timedelta(hours=1)
+        ref = self.state.refs.get(key)
+        current_hour = floor_hour(now)
+        if ref is None or ref.time >= current_hour:
+            return  # tracker never started, or that hour is already accounted for
+        hour = current_hour - timedelta(hours=1)
         month_c, day_c = self._buckets(hour, now)
         if month_c is None:
             return
@@ -197,6 +196,7 @@ class Engine:
         )
 
     def close_month(self, month: str, now: datetime, limits: Limits) -> HistoryRow:
+        """Close a frozen month for good. `now` is part of the interface but currently unused."""
         st = self.state
         for existing in st.history:
             if existing.month == month:
@@ -204,6 +204,8 @@ class Engine:
                 return existing
         if month not in st.pending:
             raise ValueError(f"miesiąc {month} nie jest zamrożony")
+        if any(m < month for m in (*st.pending, *st.months)):
+            raise ValueError(f"wcześniejszy miesiąc nie jest jeszcze zamknięty (przed {month})")
         pending = st.pending[month]
         c = pending.counters
         tariff = Tariff.from_dict(pending.tariff)
