@@ -133,7 +133,7 @@ async def test_inicjuj_builds_months_from_statistics(hass, freezer, tmp_path, ai
     assert again.import_peak + again.import_offpeak == pytest.approx(total)
 
 
-async def test_inicjuj_keeps_older_history_and_inflows(hass, freezer, tmp_path, aioclient_mock):
+async def test_inicjuj_keeps_older_history_and_inflows(hass, freezer, tmp_path, aioclient_mock, caplog):
     freezer.move_to(NOW)
     _mock_meteo(aioclient_mock, status=500)
     entry = await _setup_entry(hass, tmp_path)
@@ -154,6 +154,8 @@ async def test_inicjuj_keeps_older_history_and_inflows(hass, freezer, tmp_path, 
     assert [i.month for i in new.inflows] == ["2026-09"]
     assert len(new.corrections) == 1
     assert new.storage_start == "2026-09"
+    assert "Invoices of months not closed by the rebuild were dropped" in caplog.text
+    assert "2026-11" in caplog.text
 
 
 async def test_open_meteo_failure_is_tolerated(hass, aioclient_mock, caplog):
@@ -210,3 +212,52 @@ async def test_inicjuj_across_month_end_is_idempotent(hass, freezer, tmp_path, h
     assert len(again.corrections) == 1
     lines = (tmp_path / "prad" / "prad_miesiace.csv").read_text(encoding="utf-8").splitlines()
     assert sum(1 for line in lines if "2026-10" in line) == 1
+
+
+@pytest.mark.parametrize("seed", ["inflow", "correction"])
+async def test_inicjuj_requires_confirmation_for_storage_state(hass, freezer, tmp_path, seed):
+    freezer.move_to(NOW)
+    entry = await _setup_entry(hass, tmp_path)
+    state = entry.runtime_data.engine.state
+    if seed == "inflow":
+        state.inflows.append(Inflow("2026-09", Zone.PEAK, Decimal("5"), "2027-09"))
+    else:
+        state.corrections.append({"time": "2026-11-01T00:00:00+01:00", "month": "2026-09", "amount": "5"})
+    with pytest.raises(ServiceValidationError, match="Stan już istnieje"):
+        await _call(hass, "inicjuj", {"od": "2026-11-23", "poczatek_magazynu": "2026-11"})
+
+
+async def _two_month_stats(hass) -> None:
+    first = datetime(2026, 10, 29, 22, 0, tzinfo=UTC)  # reference hour before the start 2026-10-30
+    last = datetime(2026, 12, 2, 10, 0, tzinfo=UTC)
+    hours = int((last - first) / timedelta(hours=1)) + 1
+    await _import_stats(hass, "sensor.test_import", 0.5, first, hours)
+    await _import_stats(hass, "sensor.test_export", 0.0, first, hours)
+
+
+async def test_inicjuj_replays_correction_before_the_month_close(hass, freezer, tmp_path):
+    freezer.move_to("2026-12-02 12:00:00+01:00")
+    entry = await _setup_entry(hass, tmp_path)
+    await _two_month_stats(hass)
+    state = entry.runtime_data.engine.state
+    state.corrections.append({"time": "2026-11-10T10:00:00+01:00", "month": "2026-10", "amount": "3"})
+    await _call(hass, "inicjuj", {"od": "2026-10-30", "poczatek_magazynu": "2026-09", "potwierdz": True})
+    rows = {r.month: r for r in entry.runtime_data.engine.state.history}
+    assert rows["2026-10"].magazyn_uzyte == 0  # the correction came after October closed
+    assert rows["2026-11"].magazyn_uzyte == Decimal("3")  # and before November closed
+
+
+async def test_inicjuj_keeps_correction_made_after_the_first_rebuild(hass, freezer, tmp_path):
+    freezer.move_to("2026-12-02 12:00:00+01:00")
+    entry = await _setup_entry(hass, tmp_path)
+    await _two_month_stats(hass)
+    data = {"od": "2026-10-30", "poczatek_magazynu": "2026-09", "potwierdz": True}
+    await _call(hass, "inicjuj", data)
+    coordinator = entry.runtime_data
+    assert coordinator.engine.storage_kwh() == 0
+    # A correction for a month before the start date, entered after the first rebuild.
+    coordinator.engine.state.corrections.append(
+        {"time": "2026-12-02T12:30:00+01:00", "month": "2026-09", "amount": "4"}
+    )
+    await _call(hass, "inicjuj", data)
+    assert coordinator.engine.storage_kwh() == Decimal("4")

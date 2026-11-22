@@ -88,7 +88,7 @@ async def _rebuild(call: ServiceCall) -> None:
     async with coordinator.lock:
         st = coordinator.engine.state
         if (st.history or st.inflows or st.corrections) and not call.data["potwierdz"]:
-            raise ServiceValidationError("Historia istnieje – wywołaj z potwierdz: true")
+            raise ServiceValidationError("Stan już istnieje (historia, magazyn lub korekty) – wywołaj z potwierdz: true")
         await async_rebuild(call.hass, coordinator, start, call.data["poczatek_magazynu"])
 
 
