@@ -141,7 +141,8 @@ async def async_collect_weather(
             if d.isoformat() not in rads and (today - d).days > ARCHIVE_LAG_DAYS
         ]
         if gaps:
-            rads.update(await async_fetch_radiation_archive(hass, min(gaps), max(gaps)))
+            archive = await async_fetch_radiation_archive(hass, min(gaps), max(gaps))
+            rads = {**archive, **rads}  # values the forecast did return take precedence
     for d in need_rad:
         if d.isoformat() in rads:
             found.setdefault(d.isoformat(), {})["radiation"] = rads[d.isoformat()]
