@@ -5,7 +5,7 @@ import asyncio
 import logging
 import math
 from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -319,9 +319,10 @@ class PradCoordinator(DataUpdateCoordinator[None]):
 
     def invoice_form_amount(self) -> Decimal | None:
         """Typed amount, else the invoice already stored for the form month."""
+        month = self.invoice_form_month()  # first: drops a draft whose month left the history
         if self.invoice_amount is not None:
             return self.invoice_amount
-        row = self._history_row(self.invoice_form_month())
+        row = self._history_row(month)
         return None if row is None else row.invoice
 
     def select_invoice_month(self, month: str) -> None:
@@ -331,8 +332,11 @@ class PradCoordinator(DataUpdateCoordinator[None]):
 
     def set_invoice_amount(self, amount: Decimal) -> None:
         # Pin the month the amount was typed for, so a newly closed month cannot take it over.
-        self.invoice_month = self.invoice_form_month()
-        self.invoice_amount = amount.quantize(Decimal("0.01"))
+        month = self.invoice_form_month()
+        if month is None:
+            raise ValueError("Brak zamkniętych miesięcy – nie ma do czego wpisać faktury")
+        self.invoice_month = month
+        self.invoice_amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         self.async_update_listeners()
 
     def clear_invoice_draft(self) -> None:

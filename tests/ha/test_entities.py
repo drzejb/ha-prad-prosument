@@ -252,6 +252,10 @@ async def test_invoice_form_without_history(hass, freezer, tmp_path):
     assert hass.states.get("select.prad_faktura_miesiac").state == "unknown"
     with pytest.raises(ServiceValidationError, match="Brak zamkniętych"):
         await hass.services.async_call(
+            "number", "set_value", {"entity_id": "number.prad_faktura_kwota", "value": 10}, blocking=True
+        )
+    with pytest.raises(ServiceValidationError, match="Brak zamkniętych"):
+        await hass.services.async_call(
             "button", "press", {"entity_id": "button.prad_faktura_zapisz"}, blocking=True
         )
 
