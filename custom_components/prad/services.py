@@ -4,7 +4,6 @@ from __future__ import annotations
 import math
 from datetime import datetime, time
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
@@ -14,9 +13,8 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 
-from .const import CSV_DIR, CSV_INVOICES, DOMAIN
+from .const import DOMAIN
 from .coordinator import PradCoordinator
-from .logic import csvio
 from .logic.zones import TZ
 
 _MONTH = vol.Match(r"^\d{4}-(0[1-9]|1[0-2])$", msg="Miesiąc musi mieć format RRRR-MM")
@@ -61,21 +59,17 @@ async def _storage_correction(call: ServiceCall) -> None:
 
 async def _set_invoice(call: ServiceCall) -> None:
     coordinator = _coordinator(call.hass)
-    amount = _decimal(call.data["kwota"])
-    month = call.data["miesiac"]
-    async with coordinator.lock:
-        try:
-            coordinator.engine.set_invoice(month, amount)
-        except ValueError as err:
-            raise ServiceValidationError(str(err)) from err
-        await coordinator.async_save()  # Store first, so the invoice survives a CSV failure
-        path = Path(call.hass.config.path(CSV_DIR)) / CSV_INVOICES
-        try:
-            await call.hass.async_add_executor_job(csvio.append_invoice, path, month, amount, dt_util.now())
-        except OSError as err:
-            coordinator.async_update_listeners()
-            raise ServiceValidationError("Faktura zapisana, ale nie udało się dopisać do pliku CSV") from err
-    coordinator.async_update_listeners()
+    await async_store_invoice(coordinator, call.data["miesiac"], _decimal(call.data["kwota"]))
+
+
+async def async_store_invoice(coordinator: PradCoordinator, month: str, amount: Decimal) -> None:
+    """Shared by the service and the invoice form button; errors as ServiceValidationError."""
+    try:
+        await coordinator.async_set_invoice(month, amount)
+    except ValueError as err:
+        raise ServiceValidationError(str(err)) from err
+    except OSError as err:
+        raise ServiceValidationError("Faktura zapisana, ale nie udało się dopisać do pliku CSV") from err
 
 
 async def _rebuild(call: ServiceCall) -> dict[str, Any]:

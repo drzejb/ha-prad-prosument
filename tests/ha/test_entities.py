@@ -180,3 +180,77 @@ async def test_history_derived_entities(hass, freezer):
     }
     assert days[0]["dzien"] == "2026-11-22"
     assert days[0]["pobor_droga"] == pytest.approx(1.5)
+
+
+async def _invoice_form_entry(hass, freezer, tmp_path):
+    from decimal import Decimal
+
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    hass.config.config_dir = str(tmp_path)  # isolated CSV directory
+    entry = await _setup_entry(hass)
+    coordinator = entry.runtime_data
+    coordinator.engine.state.history.append(_row("2026-09", invoice=Decimal("55.81")))
+    coordinator.engine.state.history.append(_row("2026-10"))
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+    return coordinator
+
+
+async def test_invoice_form_defaults_to_newest_month_without_invoice(hass, freezer, tmp_path):
+    await _invoice_form_entry(hass, freezer, tmp_path)
+    month = hass.states.get("select.prad_faktura_miesiac")
+    assert month.state == "2026-10"
+    assert month.attributes["options"] == ["2026-10", "2026-09"]
+    assert hass.states.get("number.prad_faktura_kwota").state == "unknown"
+    assert hass.states.get("button.prad_faktura_zapisz") is not None
+
+
+async def test_invoice_form_selecting_month_shows_stored_invoice(hass, freezer, tmp_path):
+    await _invoice_form_entry(hass, freezer, tmp_path)
+    await hass.services.async_call(
+        "select", "select_option", {"entity_id": "select.prad_faktura_miesiac", "option": "2026-09"}, blocking=True
+    )
+    assert float(hass.states.get("number.prad_faktura_kwota").state) == pytest.approx(55.81)
+
+
+async def test_invoice_form_button_saves_invoice(hass, freezer, tmp_path):
+    from decimal import Decimal
+
+    coordinator = await _invoice_form_entry(hass, freezer, tmp_path)
+    await hass.services.async_call(
+        "number", "set_value", {"entity_id": "number.prad_faktura_kwota", "value": 447.12}, blocking=True
+    )
+    await hass.services.async_call("button", "press", {"entity_id": "button.prad_faktura_zapisz"}, blocking=True)
+    await hass.async_block_till_done()
+    row = next(r for r in coordinator.engine.state.history if r.month == "2026-10")
+    assert row.invoice == Decimal("447.12")
+    csv_text = (tmp_path / "prad" / "prad_faktury.csv").read_text(encoding="utf-8")
+    assert "2026-10;447.12;" in csv_text
+    # every month has an invoice now: the form shows the newest one with its stored amount
+    assert hass.states.get("select.prad_faktura_miesiac").state == "2026-10"
+    assert float(hass.states.get("number.prad_faktura_kwota").state) == pytest.approx(447.12)
+    assert float(hass.states.get("sensor.prad_model_vs_faktura").state) == pytest.approx(-100.0)
+
+
+async def test_invoice_form_button_requires_amount(hass, freezer, tmp_path):
+    from homeassistant.exceptions import ServiceValidationError
+
+    coordinator = await _invoice_form_entry(hass, freezer, tmp_path)
+    with pytest.raises(ServiceValidationError, match="Wpisz kwotę"):
+        await hass.services.async_call(
+            "button", "press", {"entity_id": "button.prad_faktura_zapisz"}, blocking=True
+        )
+    assert next(r for r in coordinator.engine.state.history if r.month == "2026-10").invoice is None
+
+
+async def test_invoice_form_without_history(hass, freezer, tmp_path):
+    from homeassistant.exceptions import ServiceValidationError
+
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    hass.config.config_dir = str(tmp_path)
+    await _setup_entry(hass)
+    assert hass.states.get("select.prad_faktura_miesiac").state == "unknown"
+    with pytest.raises(ServiceValidationError, match="Brak zamkniętych"):
+        await hass.services.async_call(
+            "button", "press", {"entity_id": "button.prad_faktura_zapisz"}, blocking=True
+        )
