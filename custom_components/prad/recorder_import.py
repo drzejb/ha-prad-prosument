@@ -78,10 +78,12 @@ async def async_rebuild(
     if old.rebuild_base and old.rebuild_base.get("od") == od_key:
         # Repeated rebuild: start from the same inflows as the first time (no drift).
         base = [inflow_from_dict(d) for d in old.rebuild_base["inflows"]]
+        created = str(old.rebuild_base.get("created") or now.isoformat())
     else:
         base = [i for i in old.inflows if i.month < from_month]
+        created = now.isoformat()
     new.inflows = list(base)
-    new.rebuild_base = {"od": od_key, "inflows": [inflow_to_dict(i) for i in base]}
+    new.rebuild_base = {"od": od_key, "created": created, "inflows": [inflow_to_dict(i) for i in base]}
     if start.day != 1 and any(r.month == from_month for r in old.history):
         _LOGGER.warning("Month %s will be replaced by a partial month starting on %s", from_month, od_key)
     new.corrections = [dict(c) for c in old.corrections]
@@ -100,6 +102,27 @@ async def async_rebuild(
         _LOGGER.warning("Weather for the rebuild could not be fetched")
 
     engine = Engine(new, dict(coordinator.consumers))
+    # Corrections to replay: months from the start date, or entered after the base was taken.
+    # They are applied in time order, each before the first tick later than its time.
+    created_at = datetime.fromisoformat(created)
+    replay: list[tuple[datetime, dict]] = []
+    for corr in old.corrections:
+        try:
+            when = datetime.fromisoformat(str(corr["time"]))
+        except (KeyError, ValueError):
+            when = datetime.max.replace(tzinfo=UTC)
+        if corr.get("month", "") >= from_month or when > created_at:
+            replay.append((when, corr))
+    replay.sort(key=lambda item: item[0])
+
+    def apply_correction(corr: dict) -> None:
+        try:
+            engine._apply_correction(Decimal(str(corr["amount"])), corr["month"])  # noqa: SLF001
+        except (ValueError, KeyError, ArithmeticError):
+            _LOGGER.warning(
+                "Storage correction %s kWh for %s skipped in rebuild", corr.get("amount"), corr.get("month")
+            )
+
     tariff, before_cross, limits = coordinator.tariff(), coordinator.storage_before_cross(), coordinator.limits()
     last_hour = now.replace(minute=0, second=0, microsecond=0) - _HOUR
     hours = gaps = 0
@@ -115,6 +138,8 @@ async def async_rebuild(
             gaps += 1
         consumers = {slug: value(eid) for slug, eid in consumer_ids.items()}
         tick = hour + _HOUR
+        while replay and replay[0][0] < tick:
+            apply_correction(replay.pop(0)[1])
         engine.on_tick(tick, fox, value(pv_id), consumers, limits)
         closed.extend(r.month for r in engine.catch_up(tick, tariff, before_cross, limits))
         hours += 1
@@ -122,15 +147,8 @@ async def async_rebuild(
         if hours % _YIELD_EVERY == 0:
             await asyncio.sleep(0)
 
-    # Corrections for months from the start date: replay in their original order.
-    for corr in old.corrections:
-        if corr.get("month", "") < from_month:
-            continue
-        try:
-            engine._apply_correction(Decimal(str(corr["amount"])), corr["month"])  # noqa: SLF001
-        except (ValueError, KeyError, ArithmeticError):
-            _LOGGER.warning("Storage correction %s kWh for %s skipped in rebuild", corr.get("amount"), corr.get("month"))
-    new.corrections = [dict(c) for c in old.corrections]
+    for _when, corr in replay:
+        apply_correction(corr)
 
     for row in new.history:
         if row.month in invoices:
