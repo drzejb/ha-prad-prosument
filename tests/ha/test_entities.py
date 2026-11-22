@@ -254,3 +254,34 @@ async def test_invoice_form_without_history(hass, freezer, tmp_path):
         await hass.services.async_call(
             "button", "press", {"entity_id": "button.prad_faktura_zapisz"}, blocking=True
         )
+
+
+async def test_invoice_form_draft_stays_with_its_month(hass, freezer, tmp_path):
+    from decimal import Decimal
+
+    coordinator = await _invoice_form_entry(hass, freezer, tmp_path)
+    await hass.services.async_call(
+        "number", "set_value", {"entity_id": "number.prad_faktura_kwota", "value": 447.123}, blocking=True
+    )
+    assert coordinator.invoice_amount == Decimal("447.12")
+    coordinator.engine.state.history.append(_row("2026-11"))  # a newer month closes meanwhile
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+    assert hass.states.get("select.prad_faktura_miesiac").state == "2026-10"
+    assert float(hass.states.get("number.prad_faktura_kwota").state) == pytest.approx(447.12)
+
+    coordinator.engine.state.history[:] = [r for r in coordinator.engine.state.history if r.month != "2026-10"]
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+    assert hass.states.get("select.prad_faktura_miesiac").state == "2026-11"
+    assert hass.states.get("number.prad_faktura_kwota").state == "unknown"
+
+
+async def test_invoice_form_rejects_nan(hass, freezer, tmp_path):
+    from homeassistant.exceptions import ServiceValidationError
+
+    coordinator = await _invoice_form_entry(hass, freezer, tmp_path)
+    entity = hass.data["entity_components"]["number"].get_entity("number.prad_faktura_kwota")
+    with pytest.raises(ServiceValidationError):
+        await entity.async_set_native_value(float("nan"))
+    assert coordinator.invoice_amount is None

@@ -32,8 +32,13 @@ class PradSaveInvoiceButton(PradEntity, ButtonEntity):
         amount = coordinator.invoice_form_amount()
         if amount is None:
             raise ServiceValidationError("Wpisz kwotę faktury")
-        await async_store_invoice(coordinator, month, amount)
+        if coordinator.invoice_amount is None:
+            return  # only the stored invoice is shown: nothing new to save
+        try:
+            await async_store_invoice(coordinator, month, amount)
+        except ServiceValidationError as err:
+            if isinstance(err.__cause__, OSError):
+                coordinator.clear_invoice_draft()  # the invoice is stored, only the CSV failed
+            raise
         # Saved: the form moves on to the next month without an invoice.
-        coordinator.invoice_month = None
-        coordinator.invoice_amount = None
-        coordinator.async_update_listeners()
+        coordinator.clear_invoice_draft()
