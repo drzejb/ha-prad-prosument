@@ -61,3 +61,21 @@ def test_storage_before_cross_flag():
 def test_zero_everything():
     s = settle("2026-11", {P: D(0), O: D(0)}, {P: D(0), O: D(0)}, (), D("0.8"), False, True)
     assert s.billable == {P: 0, O: 0} and s.new_inflows == ()
+
+
+def test_mixed_inflows_stale_same_month_and_fifo_order():
+    inflows = (
+        Inflow("2026-11", P, D("10"), "2027-11"),
+        Inflow("2025-12", P, D("7"), "2026-12"),  # stale: valid_until < month
+        Inflow("2027-01", O, D("3"), "2028-01"),  # same month: not usable, not expired
+        Inflow("2026-06", O, D("4"), "2027-06"),
+    )
+    before = tuple(inflows)
+    s = settle("2027-01", {P: D("6"), O: D("0")}, {P: D("0"), O: D("0")}, inflows, D("0.8"), False, True)
+    # missing P=6: 2025-12 skipped (stale), 2026-06 gives 4, 2026-11 gives 2, 2027-01 skipped
+    assert s.storage_used == D("6") and s.billable == {P: D("0"), O: D("0")}
+    assert s.expired == D("7")
+    assert s.new_inflows == ()
+    assert s.inflows_after == (Inflow("2026-11", P, D("8"), "2027-11"), Inflow("2027-01", O, D("3"), "2028-01"))
+    assert s.storage_after == D("11")
+    assert inflows == before
