@@ -15,6 +15,8 @@ CONF_PV = "pv_entity"
 CONF_TEMP = "temperature_entity"
 CONF_CONSUMERS = "consumers"  # list of {"name": str, "entity_id": str}
 
+RESERVED_SLUGS = frozenset({"fox", "pv"})  # engine tracker keys
+
 CSV_DIR = "prad"  # relative to hass.config.path()
 CSV_MONTHS = "prad_miesiace.csv"
 CSV_CONSUMERS = "prad_odbiorniki.csv"
