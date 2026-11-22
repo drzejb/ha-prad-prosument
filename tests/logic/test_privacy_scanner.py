@@ -64,3 +64,22 @@ def test_clean_message_cuts_scissors_and_comments():
     cleaned = check_private.clean_message(text)
     assert cleaned == "subject\nbody"
     assert scan_text(cleaned, []) == []
+
+
+def _message_file(tmp_path, above, below):
+    ip = ".".join(["192", "168", "1", "10"])
+    scissors = "# " + "-" * 24 + " >8 " + "-" * 24
+    lines = ["subject", ("host " + ip) if above else "body", scissors, ("+host " + ip) if below else "+ok", ""]
+    f = tmp_path / "MSG"
+    f.write_text("\n".join(lines), encoding="utf-8")
+    return str(f)
+
+
+def test_message_file_ignores_content_below_scissors(tmp_path):
+    f = _message_file(tmp_path, above=False, below=True)
+    assert check_private.main(["--builtin-only", "--message-file", f]) == 0
+
+
+def test_message_file_flags_content_above_scissors(tmp_path):
+    f = _message_file(tmp_path, above=True, below=False)
+    assert check_private.main(["--builtin-only", "--message-file", f]) != 0

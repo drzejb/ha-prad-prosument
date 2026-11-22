@@ -4,8 +4,10 @@ from zoneinfo import ZoneInfo
 from custom_components.prad.logic.zones import (
     Zone,
     add_months,
+    day_key,
     days_in_month,
     month_key,
+    month_start,
     next_month_key,
     next_zone_change,
     zone_at,
@@ -52,3 +54,5 @@ def test_month_helpers():
     assert next_month_key("2026-12") == "2027-01"
     assert add_months("2026-11", 12) == "2027-11"
     assert days_in_month("2027-02") == 28
+    assert day_key(h(2026, 12, 1, 0)) == "2026-12-01"
+    assert month_start("2026-12") == h(2026, 12, 1, 0)
