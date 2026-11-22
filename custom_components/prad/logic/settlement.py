@@ -48,6 +48,16 @@ def settle(
     storage_before_cross: bool,
     final: bool,
 ) -> Settlement:
+    """Settle one month.
+
+    Order: (1) same-zone use of credit; (2) cross-zone move and storage use, in the order given by
+    ``storage_before_cross``; (3) expiry, only when ``final`` and only of the pre-existing inflows
+    (new inflows never expire in the month they are created).
+
+    The caller must not pass this month's own inflows in ``inflows``: settling a month twice would
+    duplicate them. With ``final=False`` stale inflows are not removed, so they stay in
+    ``storage_after`` until the next final close.
+    """
     if final:
         consumption = {z: _round(consumption[z]) for z in _ZONES}
         export = {z: _round(export[z]) for z in _ZONES}
