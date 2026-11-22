@@ -32,6 +32,7 @@ from .const import (
     CSV_DIR,
     CSV_MONTHS,
     DOMAIN,
+    RESERVED_SLUGS,
     SETTING_DEFAULTS,
     STORAGE_KEY,
     STORAGE_MINOR,
@@ -110,6 +111,9 @@ class PradCoordinator(DataUpdateCoordinator[None]):
     async def async_load(self) -> None:
         for item in self.config_entry.options.get(CONF_CONSUMERS, []):
             slug = slugify(item["name"])
+            if not slug or slug in RESERVED_SLUGS:
+                _LOGGER.warning("Skipping consumer with reserved or empty name %r", item["name"])
+                continue
             self.consumers[slug] = item["name"]
             self.consumer_entities[slug] = item["entity_id"]
 
@@ -119,7 +123,7 @@ class PradCoordinator(DataUpdateCoordinator[None]):
         else:
             try:
                 state = State.from_dict(data["state"])
-            except (KeyError, TypeError, ValueError) as err:
+            except (KeyError, TypeError, ValueError, ArithmeticError, AttributeError) as err:
                 # Never overwrite data that cannot be read: keep a copy and refuse to start.
                 await self.backup_store.async_save(data)
                 raise ConfigEntryError(f"Stored state of {DOMAIN} cannot be read: {err}") from err
@@ -141,6 +145,10 @@ class PradCoordinator(DataUpdateCoordinator[None]):
                 "settings": {k: _serialize(v) for k, v in self.settings.items()},
             }
         )
+
+    async def async_save_locked(self) -> None:
+        async with self.lock:
+            await self.async_save()
 
     # ---------------------------------------------------------- settings
 
@@ -220,10 +228,11 @@ class PradCoordinator(DataUpdateCoordinator[None]):
         async with self.lock:
             self.engine.catch_up(now, self.tariff(), self.storage_before_cross(), self.limits())
             unwritten = [row for row in self.engine.state.history if not row.csv_written]
+            # Store first (rows still csv_written=False), then CSV, then the flag.
+            # Saved unconditionally: catch_up may have frozen months without closing them.
+            await self.async_save()
             if not unwritten:
                 return
-            # Store first (rows still csv_written=False), then CSV, then the flag.
-            await self.async_save()
             for row in unwritten:
                 await self.hass.async_add_executor_job(self._write_csv, row)
                 row.csv_written = True

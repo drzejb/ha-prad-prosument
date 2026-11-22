@@ -17,6 +17,7 @@ from .const import (
     CONF_PV,
     CONF_TEMP,
     DOMAIN,
+    RESERVED_SLUGS,
 )
 
 CONF_NAME = "name"
@@ -76,7 +77,7 @@ class PradOptionsFlow(OptionsFlow):
         if user_input is not None:
             name = str(user_input[CONF_NAME]).strip()
             slug = slugify(name)
-            if not slug or any(slugify(c["name"]) == slug for c in self._items()):
+            if not slug or slug in RESERVED_SLUGS or any(slugify(c["name"]) == slug for c in self._items()):
                 errors[CONF_NAME] = "invalid_name"
             else:
                 self._items().append({"name": name, "entity_id": user_input[CONF_ENTITY_ID]})
@@ -114,7 +115,10 @@ class PradOptionsFlow(OptionsFlow):
 
     async def async_step_finish(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         registry = er.async_get(self.hass)
+        remaining = {slugify(c["name"]) for c in self._items()}
         for slug in self._removed:
+            if slug in remaining:
+                continue
             entity_id = f"sensor.prad_mc_odb_{slug}"
             if registry.async_get(entity_id) is not None:
                 registry.async_remove(entity_id)

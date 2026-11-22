@@ -1,12 +1,13 @@
 """Prad - net-metering prosumer integration for Home Assistant."""
 from __future__ import annotations
 
+CONFIG_SCHEMA = None
 try:
     from homeassistant.helpers import config_validation as cv
 
     CONFIG_SCHEMA = cv.config_entry_only_config_schema("prad")
 except ModuleNotFoundError:  # logic tests on Windows run without Home Assistant
-    CONFIG_SCHEMA = None
+    pass
 
 
 async def async_setup(hass, config) -> bool:
@@ -29,6 +30,8 @@ async def async_setup_entry(hass, entry) -> bool:
     entry.runtime_data = coordinator
 
     async def _tick(now) -> None:
+        if not hass.is_running:
+            return
         await coordinator.async_tick(now)
 
     async def _refresh(now) -> None:
@@ -36,6 +39,8 @@ async def async_setup_entry(hass, entry) -> bool:
         coordinator.async_update_listeners()
 
     async def _close(now) -> None:
+        if not hass.is_running:
+            return
         await coordinator.async_close_pending(now)
 
     async def _started(_hass) -> None:
@@ -44,7 +49,7 @@ async def async_setup_entry(hass, entry) -> bool:
         await coordinator.async_close_pending(now)
 
     async def _stop(_event) -> None:
-        await coordinator.async_save()
+        await coordinator.async_save_locked()
 
     entry.async_on_unload(async_track_time_change(hass, _tick, minute=0, second=10))
     entry.async_on_unload(async_track_time_change(hass, _refresh, minute=0, second=0))
@@ -70,5 +75,5 @@ async def async_unload_entry(hass, entry) -> bool:
     """Unload a config entry."""
     from .const import PLATFORMS
 
-    await entry.runtime_data.async_save()
+    await entry.runtime_data.async_save_locked()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
