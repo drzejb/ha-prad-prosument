@@ -40,6 +40,7 @@ def _row() -> HistoryRow:
         zuzycie_domu=1.5, produkcja_pv=2.5, autokonsumpcja=1.0, reszta=0.5,
         temp_srednia=9.5, stopniodni=250.0, naslonecznienie_mj=None, wersja_cennika="v1",
         consumers={"sauna": 1.0}, consumers_missing={"sauna": 2}, invoice=D("123.45"), csv_written=True,
+        tariff=DEFAULT_TARIFF.to_dict(), storage_before_cross=True,
     )
 
 
@@ -85,3 +86,16 @@ def test_state_without_rebuild_base_loads_as_none():
     data = State().to_dict()
     del data["rebuild_base"]
     assert State.from_dict(data).rebuild_base is None
+
+
+def test_history_row_without_frozen_inputs_loads_as_none():
+    data = _row().to_dict()
+    del data["tariff"]
+    del data["storage_before_cross"]
+    row = HistoryRow.from_dict(data)
+    assert row.tariff is None and row.storage_before_cross is None
+
+
+def test_history_row_frozen_inputs_roundtrip():
+    restored = HistoryRow.from_dict(json.loads(json.dumps(_row().to_dict())))
+    assert restored.tariff == DEFAULT_TARIFF.to_dict() and restored.storage_before_cross is True

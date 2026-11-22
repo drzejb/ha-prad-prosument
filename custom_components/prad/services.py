@@ -5,10 +5,11 @@ import math
 from datetime import datetime, time
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
@@ -77,7 +78,7 @@ async def _set_invoice(call: ServiceCall) -> None:
     coordinator.async_update_listeners()
 
 
-async def _rebuild(call: ServiceCall) -> None:
+async def _rebuild(call: ServiceCall) -> dict[str, Any]:
     from .recorder_import import async_rebuild
 
     coordinator = _coordinator(call.hass)
@@ -89,10 +90,12 @@ async def _rebuild(call: ServiceCall) -> None:
         st = coordinator.engine.state
         if (st.history or st.inflows or st.corrections) and not call.data["potwierdz"]:
             raise ServiceValidationError("Stan już istnieje (historia, magazyn lub korekty) – wywołaj z potwierdz: true")
-        await async_rebuild(call.hass, coordinator, start, call.data["poczatek_magazynu"])
+        return await async_rebuild(call.hass, coordinator, start, call.data["poczatek_magazynu"])
 
 
 def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "magazyn_korekta", _storage_correction, SCHEMA_STORAGE)
     hass.services.async_register(DOMAIN, "wpisz_fakture", _set_invoice, SCHEMA_INVOICE)
-    hass.services.async_register(DOMAIN, "inicjuj", _rebuild, SCHEMA_REBUILD)
+    hass.services.async_register(
+        DOMAIN, "inicjuj", _rebuild, SCHEMA_REBUILD, supports_response=SupportsResponse.OPTIONAL
+    )

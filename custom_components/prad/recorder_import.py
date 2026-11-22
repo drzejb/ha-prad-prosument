@@ -17,6 +17,7 @@ from homeassistant.util import dt as dt_util
 from .const import CONF_EXPORT, CONF_IMPORT, CONF_PV, CONF_TEMP
 from .logic.engine import Engine
 from .logic.state import State, inflow_from_dict, inflow_to_dict
+from .logic.tariff import Tariff
 from .logic.zones import TZ, month_key
 from .weather import async_collect_weather, merge_weather
 
@@ -62,13 +63,20 @@ async def async_rebuild(
             _utc_hour(r["start"]): float(r["state"]) for r in rows if r.get("state") is not None
         }
 
+    if not (by_entity.get(import_id, {}).keys() & by_entity.get(export_id, {}).keys()):
+        raise ServiceValidationError(
+            "Statystyki importu i eksportu nie zawierają odczytów stanu licznika (state); "
+            "wybierz liczniki energii z sumą narastającą"
+        )
+
     old = coordinator.engine.state
-    await coordinator.backup_store.async_save(
+    await coordinator.async_save_backup(
         {
             "state": old.to_dict(),
             "settings": {k: str(v) if isinstance(v, Decimal) else v for k, v in coordinator.settings.items()},
         }
     )
+    warnings: list[str] = []
 
     from_month = month_key(start)
     new = State(storage_start=storage_start)
@@ -85,9 +93,12 @@ async def async_rebuild(
     new.inflows = list(base)
     new.rebuild_base = {"od": od_key, "created": created, "inflows": [inflow_to_dict(i) for i in base]}
     if start.day != 1 and any(r.month == from_month for r in old.history):
+        message = f"Miesiąc {from_month} zostanie zastąpiony miesiącem częściowym od {od_key}"
+        warnings.append(message)
         _LOGGER.warning("Month %s will be replaced by a partial month starting on %s", from_month, od_key)
     new.corrections = [dict(c) for c in old.corrections]
     new.weather = copy.deepcopy(old.weather)
+    prior = {r.month: r for r in old.history if r.month >= from_month and r.tariff is not None}
     invoices = {r.month: r.invoice for r in old.history if r.month >= from_month and r.invoice is not None}
 
     # Weather first, so the months closed in the loop below get temperature and radiation.
@@ -119,6 +130,7 @@ async def async_rebuild(
         try:
             engine._apply_correction(Decimal(str(corr["amount"])), corr["month"])  # noqa: SLF001
         except (ValueError, KeyError, ArithmeticError):
+            warnings.append(f"Korekta magazynu {corr.get('amount')} kWh dla {corr.get('month')} pominięta")
             _LOGGER.warning(
                 "Storage correction %s kWh for %s skipped in rebuild", corr.get("amount"), corr.get("month")
             )
@@ -141,6 +153,13 @@ async def async_rebuild(
         while replay and replay[0][0] < tick:
             apply_correction(replay.pop(0)[1])
         engine.on_tick(tick, fox, value(pv_id), consumers, limits)
+        for month in engine.months_ready_to_freeze(tick):
+            old_row = prior.get(month)
+            if old_row is not None and old_row.tariff is not None:
+                # Keep the tariff and switch the month was closed with, do not re-price it.
+                month_tariff = Tariff.from_dict(old_row.tariff)
+                month_cross = before_cross if old_row.storage_before_cross is None else old_row.storage_before_cross
+                engine.freeze_month(month, month_tariff, month_cross)
         closed.extend(r.month for r in engine.catch_up(tick, tariff, before_cross, limits))
         hours += 1
         hour = tick
@@ -150,10 +169,23 @@ async def async_rebuild(
     for _when, corr in replay:
         apply_correction(corr)
 
+    old_by_month = {r.month: r for r in old.history}
+    for row in new.history:
+        previous = old_by_month.get(row.month)
+        if previous is not None and row.month >= from_month and previous.koszt_razem != row.koszt_razem:
+            warnings.append(
+                f"Miesiąc {row.month}: koszt zmienił się z {previous.koszt_razem} na {row.koszt_razem}; "
+                "plik CSV zachowuje starą linię"
+            )
+            _LOGGER.warning(
+                "Rebuilt month %s changed cost from %s to %s; the CSV keeps the old line",
+                row.month, previous.koszt_razem, row.koszt_razem,
+            )
     for row in new.history:
         if row.month in invoices:
             row.invoice = invoices.pop(row.month)
     if invoices:
+        warnings.append("Faktury miesięcy niezamkniętych przez odbudowę zostały pominięte: " + ", ".join(sorted(invoices)))
         _LOGGER.warning("Invoices of months not closed by the rebuild were dropped: %s", sorted(invoices))
 
     coordinator.engine = engine
@@ -167,5 +199,8 @@ async def async_rebuild(
         coordinator.async_update_listeners()  # state is already swapped and saved
         raise ServiceValidationError("Nie udało się zapisać pliku CSV; spróbuj ponownie") from err
     coordinator.async_update_listeners()
+    if gaps:
+        warnings.append(f"Brak odczytów licznika w {gaps} godzinach")
+        _LOGGER.warning("Rebuild had %d hours without a Fox meter reading", gaps)
     _LOGGER.info("Rebuild finished: %d hours, %d gaps, closed months: %s", hours, gaps, closed or "none")
-    return {"hours": hours, "gaps": gaps, "closed": closed}
+    return {"godziny": hours, "przerwy": gaps, "zamkniete_miesiace": closed, "ostrzezenia": warnings}
