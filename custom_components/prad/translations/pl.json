@@ -1,0 +1,47 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Prąd - prosument",
+        "description": "Wybierz czujniki energii, które odczytuje integracja.",
+        "data": {
+          "import_entity": "Czujnik energii pobranej z sieci",
+          "export_entity": "Czujnik energii oddanej do sieci",
+          "pv_entity": "Czujnik produkcji PV",
+          "temperature_entity": "Czujnik temperatury zewnętrznej"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Dozwolony jest tylko jeden wpis Prąd."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Odbiorniki",
+        "menu_options": {
+          "add_consumer": "Dodaj odbiornik",
+          "remove_consumer": "Usuń odbiornik",
+          "finish": "Zakończ"
+        }
+      },
+      "add_consumer": {
+        "title": "Dodaj odbiornik",
+        "data": {
+          "name": "Nazwa",
+          "entity_id": "Czujnik energii"
+        }
+      },
+      "remove_consumer": {
+        "title": "Usuń odbiornik",
+        "data": {
+          "remove": "Odbiornik"
+        }
+      }
+    },
+    "error": {
+      "invalid_name": "Nazwa jest pusta albo już zajęta."
+    }
+  }
+}
