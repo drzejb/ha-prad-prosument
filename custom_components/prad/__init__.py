@@ -50,12 +50,16 @@ async def async_setup_entry(hass, entry) -> bool:
     async def _weather(now) -> None:
         if hass.state is not CoreState.running:
             return
-        await coordinator.async_update_weather(now)
+        _start_weather(now)
+
+    def _start_weather(now) -> None:
+        # Background task: cancelled automatically when the entry unloads.
+        entry.async_create_background_task(hass, coordinator.async_update_weather(now), "prad weather")
 
     async def _started(_hass) -> None:
         now = dt_util.now()
         await coordinator.async_tick(now)
-        await coordinator.async_update_weather(now)
+        _start_weather(now)
         await coordinator.async_close_pending(now)
 
     async def _stop(_event) -> None:

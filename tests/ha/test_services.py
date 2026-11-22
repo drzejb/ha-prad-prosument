@@ -23,6 +23,12 @@ HOURS = 3 * 24 + 13  # reference hour + 84 settled hours until 12:00 local
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 
 
+def _mock_meteo(aioclient_mock, **kwargs) -> None:
+    # The first registered match wins, so drop the default mock from conftest.py.
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(OPEN_METEO, **kwargs)
+
+
 @pytest.fixture(autouse=True)
 def _no_retry_delay(monkeypatch):
     monkeypatch.setattr("custom_components.prad.weather.RETRY_DELAY", 0)
@@ -102,7 +108,7 @@ async def test_inicjuj_requires_confirmation_when_history_exists(hass, freezer, 
 
 async def test_inicjuj_missing_statistics(hass, freezer, tmp_path, aioclient_mock):
     freezer.move_to(NOW)
-    aioclient_mock.get(OPEN_METEO, status=500)
+    _mock_meteo(aioclient_mock, status=500)
     await _setup_entry(hass, tmp_path)
     with pytest.raises(ServiceValidationError, match="sensor.test_import"):
         await _call(hass, "inicjuj", {"od": "2026-11-23", "poczatek_magazynu": "2026-11"})
@@ -110,7 +116,7 @@ async def test_inicjuj_missing_statistics(hass, freezer, tmp_path, aioclient_moc
 
 async def test_inicjuj_builds_months_from_statistics(hass, freezer, tmp_path, aioclient_mock):
     freezer.move_to(NOW)
-    aioclient_mock.get(OPEN_METEO, status=500)
+    _mock_meteo(aioclient_mock, status=500)
     entry = await _setup_entry(hass, tmp_path)
     await _import_stats(hass, "sensor.test_import", 0.5)
     await _import_stats(hass, "sensor.test_export", 0.0)
@@ -127,7 +133,7 @@ async def test_inicjuj_builds_months_from_statistics(hass, freezer, tmp_path, ai
 
 async def test_inicjuj_keeps_older_history_and_inflows(hass, freezer, tmp_path, aioclient_mock):
     freezer.move_to(NOW)
-    aioclient_mock.get(OPEN_METEO, status=500)
+    _mock_meteo(aioclient_mock, status=500)
     entry = await _setup_entry(hass, tmp_path)
     state = entry.runtime_data.engine.state
     state.history.append(_history_row("2026-09"))
@@ -149,13 +155,13 @@ async def test_inicjuj_keeps_older_history_and_inflows(hass, freezer, tmp_path, 
 
 
 async def test_open_meteo_failure_is_tolerated(hass, aioclient_mock):
-    aioclient_mock.get(OPEN_METEO, status=500)
+    _mock_meteo(aioclient_mock, status=500)
     assert await async_fetch_radiation(hass, 5) == {}
 
 
 async def test_open_meteo_parses_daily_values(hass, aioclient_mock):
-    aioclient_mock.get(
-        OPEN_METEO,
+    _mock_meteo(
+        aioclient_mock,
         json={"daily": {"time": ["2026-11-24", "2026-11-25"], "shortwave_radiation_sum": [3.5, None]}},
     )
     assert await async_fetch_radiation(hass, 5) == {"2026-11-24": 3.5}
