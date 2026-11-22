@@ -1,0 +1,2 @@
+pytest>=8
+holidays>=0.60
