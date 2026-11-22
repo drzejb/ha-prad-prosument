@@ -1,0 +1,47 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Prad - prosumer",
+        "description": "Select the energy sensors the integration reads.",
+        "data": {
+          "import_entity": "Grid import energy sensor",
+          "export_entity": "Grid export energy sensor",
+          "pv_entity": "PV production energy sensor",
+          "temperature_entity": "Outdoor temperature sensor"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only one Prad entry is allowed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Consumers",
+        "menu_options": {
+          "add_consumer": "Add consumer",
+          "remove_consumer": "Remove consumer",
+          "finish": "Finish"
+        }
+      },
+      "add_consumer": {
+        "title": "Add consumer",
+        "data": {
+          "name": "Name",
+          "entity_id": "Energy sensor"
+        }
+      },
+      "remove_consumer": {
+        "title": "Remove consumer",
+        "data": {
+          "remove": "Consumer"
+        }
+      }
+    },
+    "error": {
+      "invalid_name": "Name is empty or already used."
+    }
+  }
+}
