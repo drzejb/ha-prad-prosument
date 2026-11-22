@@ -24,7 +24,7 @@ ALLOWED_BINARY: set[str] = set()
 ALLOWED_AUTHOR_EMAIL_SUFFIX = "@users.noreply.github.com"
 ALLOWED_AUTHOR_NAME = "drzejb"
 
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _EMAIL_OK = re.compile(r"(?:@users\.noreply\.github\.com|^noreply@github\.com)$", re.I)
 
 BUILTIN: list[tuple[re.Pattern[str], str]] = [
@@ -68,6 +68,27 @@ def load_extra(path: Path) -> list[re.Pattern[str]] | None:
     return out
 
 
+SCISSORS = "# ------------------------ >8 ------------------------"
+
+
+def clean_message(text: str) -> str:
+    """Message as git would store it: cut at the scissors line (git commit -v), drop # comments."""
+    lines: list[str] = []
+    for ln in text.splitlines():
+        if ln.startswith(SCISSORS):
+            break
+        if not ln.startswith("#"):
+            lines.append(ln)
+    return "\n".join(lines)
+
+
+def is_added_line(line: str, prev: str) -> bool:
+    """True for an added content line of a diff; the '+++ ' file header (after '--- ') is not content."""
+    if not line.startswith("+"):
+        return False
+    return not (line.startswith("+++ ") and prev.startswith("--- "))
+
+
 def _git(*args: str) -> bytes:
     return subprocess.run(["git", *args], cwd=REPO, check=True, capture_output=True).stdout
 
@@ -108,15 +129,17 @@ def _scan_history(extra: list[re.Pattern[str]]) -> int:
         bad += _report(f"commit {sha[:8]} message", scan_text(body, extra))
     diff = _git("log", "-p", "--all", "--format=").decode("utf-8", "replace")
     current = ""
+    prev = ""
     for no, line in enumerate(diff.splitlines(), 1):
         if line.startswith("diff --git "):
             current = line.rsplit(" b/", 1)[-1]
         elif line.startswith("Binary files ") and current not in ALLOWED_BINARY:
             print(f"history diff {current}:{no}: binary file")
             bad += 1
-        elif line.startswith("+") and not line.startswith("+++"):
+        elif is_added_line(line, prev):
             bad += _report(f"history diff {current}", [(no, d) for _, d in scan_text(
                 line[1:], extra, builtin=(current != SELF_REL))])
+        prev = line
     return bad
 
 
