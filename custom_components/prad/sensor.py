@@ -49,6 +49,11 @@ def _month_view(coordinator: PradCoordinator, now: datetime) -> tuple[Counters, 
         counters = state.months[key]
     elif key in state.pending:
         counters = state.pending[key].counters
+    elif state.last_closed is not None and key <= state.last_closed:
+        # The bucket month is already closed (no new settled hour yet): follow the calendar
+        # month so that value and last_reset change together.
+        current = month_key(now)
+        return state.months.get(current, Counters()), month_start(current)
     else:
         counters = Counters()
     return counters, month_start(key)
@@ -147,6 +152,7 @@ class PradPrice(PradEntity, SensorEntity):
 
     _attr_name = f"{NAME_PREFIX}cena teraz"
     _attr_native_unit_of_measurement = "zł/kWh"
+    _attr_suggested_display_precision = 4
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, coordinator: PradCoordinator) -> None:
@@ -165,6 +171,7 @@ class PradCounterSensor(PradEntity, SensorEntity):
     """Energy counter of the month or day bucket of the last settled hour."""
 
     _attr_native_unit_of_measurement = KWH
+    _attr_suggested_display_precision = 1
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL
 
@@ -199,6 +206,7 @@ class PradCostSensor(PradEntity, SensorEntity):
     """Amount (gross) for the current month from the engine snapshot."""
 
     _attr_native_unit_of_measurement = PLN
+    _attr_suggested_display_precision = 2
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_state_class = SensorStateClass.TOTAL
 
@@ -216,6 +224,8 @@ class PradCostSensor(PradEntity, SensorEntity):
         self._attr_name = f"{NAME_PREFIX}{name}"
 
     def _totals(self) -> Totals:
+        # Follows the calendar month of now (current_snapshot), so in the first hour of a month
+        # it differs from the energy bucket (last settled hour): intended.
         c = self.coordinator
         snap = c.engine.current_snapshot(dt_util.now(), c.tariff(), c.storage_before_cross())
         return snap.totals
@@ -241,6 +251,7 @@ class PradForecast(PradEntity, SensorEntity):
 
     _attr_name = f"{NAME_PREFIX}prognoza kosztu miesiąca"
     _attr_native_unit_of_measurement = PLN
+    _attr_suggested_display_precision = 2
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_state_class = SensorStateClass.TOTAL
 
@@ -280,6 +291,7 @@ class PradStorage(PradEntity, SensorEntity):
     _unrecorded_attributes = frozenset({"wplywy", "korekty"})
     _attr_name = f"{NAME_PREFIX}magazyn"
     _attr_native_unit_of_measurement = KWH
+    _attr_suggested_display_precision = 1
     _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
 
@@ -305,7 +317,10 @@ class PradStorage(PradEntity, SensorEntity):
                 }
                 for i in state.inflows
             ],
-            "korekty": [dict(k) for k in state.corrections],
+            "korekty": [
+                {"czas": k.get("time"), "miesiac": k.get("month"), "ilosc": k.get("amount")}
+                for k in state.corrections
+            ],
             "wplyw_mc": float(inflow),
         }
 

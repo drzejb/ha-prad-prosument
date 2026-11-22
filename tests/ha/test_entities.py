@@ -95,3 +95,88 @@ async def test_history_attribute_not_recorded():
     assert "dni" in PradDays._unrecorded_attributes
     assert {"wplywy", "korekty"} <= PradStorage._unrecorded_attributes
     assert "wiersz" in PradCompareSelect._unrecorded_attributes
+
+
+async def test_month_sensor_follows_calendar_after_close(hass, freezer, tmp_path):
+    from homeassistant.util import dt as dt_util
+
+    hass.config.config_dir = str(tmp_path)
+    freezer.move_to("2026-11-30 22:30:00+01:00")
+    entry = await _setup_entry(hass)
+    hass.states.async_set("sensor.test_import", "100")
+    hass.states.async_set("sensor.test_export", "50")
+    await _tick_at(hass, freezer, "2026-11-30 23:00:10+01:00")
+    hass.states.async_set("sensor.test_import", "101")
+    await _tick_at(hass, freezer, "2026-12-01 00:00:10+01:00")
+    hass.states.async_set("sensor.test_import", "unavailable")
+    await _tick_at(hass, freezer, "2026-12-01 01:00:10+01:00")
+    freezer.move_to("2026-12-01 01:05:00+01:00")
+    await entry.runtime_data.async_close_pending(dt_util.now())
+    await hass.async_block_till_done()
+    assert entry.runtime_data.engine.state.last_closed == "2026-11"
+    state = hass.states.get("sensor.prad_mc_pobor_tania")
+    assert state.attributes["last_reset"].startswith("2026-12-01")
+    assert float(state.state) == pytest.approx(0.0)
+
+
+def _row(month, **changes):
+    from dataclasses import replace
+    from decimal import Decimal
+
+    from custom_components.prad.logic.state import HistoryRow
+
+    d = Decimal(0)
+    row = HistoryRow(
+        month=month, pobor_droga=d, pobor_tania=d, oddanie_droga=d, oddanie_tania=d,
+        magazyn_wplyw=d, magazyn_uzyte=d, magazyn_wygasle=d, magazyn_stan=d,
+        do_zaplaty_droga=d, do_zaplaty_tania=d, koszt_droga=d, koszt_tania=d,
+        oplaty_stale=d, koszt_netto=d, koszt_razem=d, zuzycie_domu=0.0, produkcja_pv=0.0,
+        autokonsumpcja=0.0, reszta=0.0, temp_srednia=None, stopniodni=None,
+        naslonecznienie_mj=None, wersja_cennika="test", csv_written=True,
+    )
+    return replace(row, **changes)
+
+
+async def test_history_derived_entities(hass, freezer):
+    from decimal import Decimal
+
+    from custom_components.prad.logic.state import Counters
+
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = await _setup_entry(hass)
+    coordinator = entry.runtime_data
+    state = coordinator.engine.state
+    state.history.append(_row("2026-09"))
+    state.history.append(
+        _row(
+            "2026-10", koszt_razem=Decimal("110"), invoice=Decimal("100"),
+            zuzycie_domu=300.0, stopniodni=150.0,
+        )
+    )
+    state.last_closed = "2026-10"
+    state.days["2026-11-22"] = Counters(import_peak=1.5, pv=2.0)
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+
+    a = hass.states.get("select.prad_porownanie_a")
+    b = hass.states.get("select.prad_porownanie_b")
+    assert a.state == "2026-09"
+    assert b.state == "2026-10"
+    assert b.attributes["wiersz"]["month"] == "2026-10"
+    assert float(hass.states.get("sensor.prad_model_vs_faktura").state) == pytest.approx(10.0)
+    assert hass.states.get("sensor.prad_model_vs_faktura").attributes["miesiac"] == "2026-10"
+    assert float(hass.states.get("sensor.prad_mc_kwh_na_stopniodzien").state) == pytest.approx(2.0)
+
+    state.history[-1].stopniodni = 5.0
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.prad_mc_kwh_na_stopniodzien").state == "unknown"
+
+    days = hass.states.get("sensor.prad_dni").attributes["dni"]
+    assert hass.states.get("sensor.prad_dni").state == "1"
+    assert set(days[0]) == {
+        "dzien", "pobor_droga", "pobor_tania", "oddanie_droga", "oddanie_tania",
+        "pv", "autokonsumpcja", "temp",
+    }
+    assert days[0]["dzien"] == "2026-11-22"
+    assert days[0]["pobor_droga"] == pytest.approx(1.5)
