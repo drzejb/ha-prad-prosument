@@ -165,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     bad = 0
     if args.message_file:
         text = Path(args.message_file).read_text(encoding="utf-8", errors="replace")
-        text = "\n".join(ln for ln in text.splitlines() if not ln.startswith("#"))
+        text = clean_message(text)
         bad = _report("commit message", scan_text(text, extra))
     elif args.history:
         bad = _scan_history(extra)
