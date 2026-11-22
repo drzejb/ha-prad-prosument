@@ -1,0 +1,206 @@
+# Pulpit „Prąd” – wklej w Edytorze surowej konfiguracji nowego pulpitu.
+# Wymaga karty ApexCharts Card (HACS). Używa tylko encji integracji `prad`.
+title: Prąd
+views:
+  - title: Rachunek
+    path: rachunek
+    icon: mdi:cash
+    type: sections
+    max_columns: 1
+    sections:
+      - type: grid
+        cards:
+          - type: tile
+            entity: sensor.prad_mc_koszt
+            name: Do zapłaty w tym miesiącu
+            icon: mdi:cash-multiple
+            grid_options: { columns: 6 }
+          - type: tile
+            entity: sensor.prad_mc_prognoza
+            name: Prognoza na koniec miesiąca
+            icon: mdi:crystal-ball
+            grid_options: { columns: 6 }
+          - type: custom:apexcharts-card
+            header: { show: true, title: Z czego się składa }
+            chart_type: donut
+            series:
+              - entity: sensor.prad_mc_koszt_droga
+                name: Strefa droga
+              - entity: sensor.prad_mc_koszt_tania
+                name: Strefa tania
+              - entity: sensor.prad_mc_oplaty_stale
+                name: Opłaty stałe
+          - type: markdown
+            content: >-
+              {% set droga = is_state('binary_sensor.prad_strefa_droga', 'on') %}
+              {% set zm = state_attr('binary_sensor.prad_strefa_droga', 'nastepna_zmiana') %}
+              **Strefa teraz:** {{ 'droga' if droga else 'tania' }}
+              ({{ states('sensor.prad_cena_teraz') }} zł/kWh)
+              {%- if zm %}, zmiana o {{ as_timestamp(zm) | timestamp_custom('%H:%M') }}{% endif %}
+
+              **Magazyn:** {{ states('sensor.prad_magazyn_kwh') }} kWh
+              (w tym miesiącu +{{ state_attr('sensor.prad_magazyn_kwh', 'wplyw_mc') }} kWh)
+          - type: custom:apexcharts-card
+            header: { show: true, title: Dzień po dniu }
+            graph_span: 31d
+            span: { start: month }
+            yaxis:
+              - id: kwh
+                decimals: 0
+              - id: temp
+                opposite: true
+                decimals: 0
+            series:
+              - entity: sensor.prad_dni
+                name: Pobór droga
+                type: column
+                yaxis_id: kwh
+                data_generator: |
+                  return entity.attributes.dni.map(d => [new Date(d.dzien + 'T12:00:00').getTime(), d.pobor_droga]);
+              - entity: sensor.prad_dni
+                name: Pobór tania
+                type: column
+                yaxis_id: kwh
+                data_generator: |
+                  return entity.attributes.dni.map(d => [new Date(d.dzien + 'T12:00:00').getTime(), d.pobor_tania]);
+              - entity: sensor.prad_dni
+                name: PV wprost
+                type: column
+                yaxis_id: kwh
+                data_generator: |
+                  return entity.attributes.dni.map(d => [new Date(d.dzien + 'T12:00:00').getTime(), d.autokonsumpcja]);
+              - entity: sensor.prad_dni
+                name: Temperatura
+                type: line
+                yaxis_id: temp
+                unit: °C
+                data_generator: |
+                  return entity.attributes.dni.filter(d => d.temp !== null).map(d => [new Date(d.dzien + 'T12:00:00').getTime(), d.temp]);
+          - type: markdown
+            title: Na co idzie prąd w tym miesiącu
+            content: >-
+              | Odbiornik | kWh | |
+
+              |---|---:|---|
+
+              {% for s in states.sensor
+                 | selectattr('entity_id', 'search', '^sensor\\.prad_mc_odb_') -%}
+              | {{ s.name | replace('Prąd – ', '') | replace(' w tym miesiącu', '') }}
+              | {{ s.state }}
+              | {{ 'brak danych: ' ~ s.attributes.godziny_bez_danych ~ ' h' if s.attributes.godziny_bez_danych else '' }} |
+
+              {% endfor -%}
+              | Reszta domu (w tym pompa) | {{ states('sensor.prad_mc_reszta') }} | |
+
+              | **Zużycie domu** | **{{ states('sensor.prad_mc_zuzycie_domu') }}** | |
+          - type: markdown
+            title: Ostatnie miesiące
+            content: >-
+              | Miesiąc | Pobór D/T | Oddanie D/T | Model | Faktura | Różnica |
+
+              |---|---:|---:|---:|---:|---:|
+
+              {% for r in (state_attr('sensor.prad_historia', 'miesiace') or []) | reverse -%}
+              {% set f = r.invoice | float(none) if r.invoice is not none else none -%}
+              {% set m = r.koszt_razem | float -%}
+              | {{ r.month }}
+              | {{ r.pobor_droga }}/{{ r.pobor_tania }}
+              | {{ r.oddanie_droga }}/{{ r.oddanie_tania }}
+              | {{ '%.2f' | format(m) }}
+              | {{ '%.2f' | format(f) if f is not none else '–' }}
+              | {{ '%+.2f' | format(m - f) if f is not none else '–' }} |
+
+              {% endfor %}
+
+  - title: Porównania
+    path: porownania
+    icon: mdi:compare
+    type: sections
+    max_columns: 1
+    sections:
+      - type: grid
+        cards:
+          - type: markdown
+            content: >-
+              {% set rows = state_attr('sensor.prad_historia', 'miesiace') or [] %}
+              {% set prev = rows | last if rows else none %}
+              **Ten miesiąc (prognoza):** {{ states('sensor.prad_mc_prognoza') }} zł
+              {%- if prev %} · **{{ prev.month }}:** {{ '%.2f' | format(prev.koszt_razem | float) }} zł{% endif %}
+          - type: custom:apexcharts-card
+            header: { show: true, title: Miesiące – koszt, oddanie, temperatura }
+            graph_span: 365d
+            span: { end: month }
+            yaxis:
+              - id: zl
+                decimals: 0
+              - id: kwh
+                opposite: true
+                decimals: 0
+              - id: temp
+                show: false
+            series:
+              - entity: sensor.prad_historia
+                name: Koszt (zł)
+                type: column
+                yaxis_id: zl
+                data_generator: |
+                  return entity.attributes.miesiace.map(r => [new Date(r.month + '-15T12:00:00').getTime(), parseFloat(r.koszt_razem)]);
+              - entity: sensor.prad_historia
+                name: Oddanie (kWh)
+                type: column
+                yaxis_id: kwh
+                data_generator: |
+                  return entity.attributes.miesiace.map(r => [new Date(r.month + '-15T12:00:00').getTime(), parseFloat(r.oddanie_droga) + parseFloat(r.oddanie_tania)]);
+              - entity: sensor.prad_historia
+                name: Średnia temperatura (°C)
+                type: line
+                yaxis_id: temp
+                data_generator: |
+                  return entity.attributes.miesiace.filter(r => r.temp_srednia !== null).map(r => [new Date(r.month + '-15T12:00:00').getTime(), r.temp_srednia]);
+          - type: custom:apexcharts-card
+            header: { show: true, title: kWh na stopniodzień }
+            graph_span: 365d
+            span: { end: month }
+            series:
+              - entity: sensor.prad_historia
+                name: kWh/°C·d
+                type: column
+                float_precision: 2
+                data_generator: |
+                  return entity.attributes.miesiace.filter(r => r.stopniodni && r.stopniodni >= 10).map(r => [new Date(r.month + '-15T12:00:00').getTime(), r.zuzycie_domu / r.stopniodni]);
+          - type: entities
+            title: Dwa miesiące obok siebie
+            entities:
+              - entity: select.prad_porownanie_a
+                name: Miesiąc A
+              - entity: select.prad_porownanie_b
+                name: Miesiąc B
+          - type: markdown
+            content: >-
+              {% set a = state_attr('select.prad_porownanie_a', 'wiersz') %}
+              {% set b = state_attr('select.prad_porownanie_b', 'wiersz') %}
+              {% if a and b %}
+              | | {{ a.month }} | {{ b.month }} |
+
+              |---|---:|---:|
+
+              | Pobór droga / tania (kWh) | {{ a.pobor_droga }} / {{ a.pobor_tania }} | {{ b.pobor_droga }} / {{ b.pobor_tania }} |
+
+              | Oddanie droga / tania (kWh) | {{ a.oddanie_droga }} / {{ a.oddanie_tania }} | {{ b.oddanie_droga }} / {{ b.oddanie_tania }} |
+
+              | Produkcja PV (kWh) | {{ a.produkcja_pv | round(0) }} | {{ b.produkcja_pv | round(0) }} |
+
+              | Zużycie domu (kWh) | {{ a.zuzycie_domu | round(0) }} | {{ b.zuzycie_domu | round(0) }} |
+
+              | Koszt (zł) | {{ a.koszt_razem }} | {{ b.koszt_razem }} |
+
+              | Faktura (zł) | {{ a.invoice or '–' }} | {{ b.invoice or '–' }} |
+
+              | Średnia temperatura (°C) | {{ a.temp_srednia if a.temp_srednia is not none else '–' }} | {{ b.temp_srednia if b.temp_srednia is not none else '–' }} |
+
+              | Stopniodni | {{ a.stopniodni if a.stopniodni is not none else '–' }} | {{ b.stopniodni if b.stopniodni is not none else '–' }} |
+
+              | Nasłonecznienie (MJ/m²) | {{ a.naslonecznienie_mj if a.naslonecznienie_mj is not none else '–' }} | {{ b.naslonecznienie_mj if b.naslonecznienie_mj is not none else '–' }} |
+              {% else %}
+              Wybierz dwa miesiące powyżej (potrzebne co najmniej dwa zamknięte miesiące).
+              {% endif %}
