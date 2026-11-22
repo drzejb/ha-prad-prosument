@@ -26,6 +26,9 @@ class PradEntity(CoordinatorEntity[PradCoordinator]):
         self._attr_unique_id = f"{DOMAIN}_{key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.config_entry.entry_id)},
-            name="Prąd – prosument",
+            # HA composes friendly names as "<device> <entity>" and strips the device name only when
+            # the entity name starts with it; the device must stay "Prąd" so that
+            # "Prąd – Sauna ..." is not shown as "Prąd – prosument Prąd – Sauna ...".
+            name="Prąd",
             entry_type=DeviceEntryType.SERVICE,
         )
