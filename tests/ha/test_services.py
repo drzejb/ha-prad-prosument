@@ -13,7 +13,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import asy
 from custom_components.prad.const import DOMAIN
 from custom_components.prad.logic.settlement import Inflow
 from custom_components.prad.logic.zones import Zone
-from custom_components.prad.weather import async_fetch_radiation
+from custom_components.prad.weather import async_collect_weather, async_fetch_radiation
 
 from test_setup import SENSORS, _history_row
 
@@ -21,12 +21,14 @@ NOW = "2026-11-26 12:00:00+01:00"
 FIRST_HOUR = datetime(2026, 11, 22, 22, 0, tzinfo=UTC)  # 23:00 local, the day before the rebuild start
 HOURS = 3 * 24 + 13  # reference hour + 84 settled hours until 12:00 local
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
 
 
 def _mock_meteo(aioclient_mock, **kwargs) -> None:
     # The first registered match wins, so drop the default mock from conftest.py.
     aioclient_mock.clear_requests()
     aioclient_mock.get(OPEN_METEO, **kwargs)
+    aioclient_mock.get(OPEN_METEO_ARCHIVE, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -63,8 +65,8 @@ async def _import_stats(
     await async_wait_recording_done(hass)
 
 
-async def _call(hass, service: str, data: dict) -> None:
-    await hass.services.async_call(DOMAIN, service, data, blocking=True)
+async def _call(hass, service: str, data: dict):
+    return await hass.services.async_call(DOMAIN, service, data, blocking=True, return_response=service == "inicjuj")
 
 
 async def test_services_require_loaded_entry(hass):
@@ -261,3 +263,78 @@ async def test_inicjuj_keeps_correction_made_after_the_first_rebuild(hass, freez
     )
     await _call(hass, "inicjuj", data)
     assert coordinator.engine.storage_kwh() == Decimal("4")
+
+
+async def test_inicjuj_returns_summary_and_warns_about_gaps(hass, freezer, tmp_path, aioclient_mock, caplog):
+    freezer.move_to(NOW)
+    _mock_meteo(aioclient_mock, status=500)
+    await _setup_entry(hass, tmp_path)
+    await _import_stats(hass, "sensor.test_import", 0.5)
+    await _import_stats(hass, "sensor.test_export", 0.0, hours=HOURS - 5)  # export ends 5 hours early
+    result = await _call(hass, "inicjuj", {"od": "2026-11-23", "poczatek_magazynu": "2026-11"})
+    assert result["godziny"] == HOURS
+    assert result["przerwy"] == 5
+    assert result["zamkniete_miesiace"] == []
+    assert any("5" in w for w in result["ostrzezenia"])
+    assert "without a Fox meter reading" in caplog.text
+
+
+async def test_inicjuj_without_any_fox_reading_raises(hass, freezer, tmp_path, aioclient_mock):
+    freezer.move_to(NOW)
+    _mock_meteo(aioclient_mock, status=500)
+    await _setup_entry(hass, tmp_path)
+    for entity_id in ("sensor.test_import", "sensor.test_export"):
+        metadata = StatisticMetaData(
+            mean_type=StatisticMeanType.NONE, has_sum=True, name=None, source="recorder",
+            statistic_id=entity_id, unit_class="energy", unit_of_measurement="kWh",
+        )
+        # Rows with a sum but no state: nothing the rebuild can use.
+        async_import_statistics(
+            hass, metadata, [StatisticData(start=FIRST_HOUR + timedelta(hours=n), sum=float(n)) for n in range(HOURS)]
+        )
+    await async_wait_recording_done(hass)
+    with pytest.raises(ServiceValidationError, match="odczytów"):
+        await _call(hass, "inicjuj", {"od": "2026-11-23", "poczatek_magazynu": "2026-11"})
+
+
+async def test_inicjuj_keeps_old_month_cost_after_tariff_change(hass, freezer, tmp_path, aioclient_mock, caplog):
+    freezer.move_to("2026-11-02 12:00:00+01:00")
+    _mock_meteo(aioclient_mock, status=500)
+    entry = await _setup_entry(hass, tmp_path)
+    first = datetime(2026, 10, 29, 22, 0, tzinfo=UTC)
+    last = datetime(2026, 11, 2, 10, 0, tzinfo=UTC)
+    hours = int((last - first) / timedelta(hours=1)) + 1
+    await _import_stats(hass, "sensor.test_import", 0.5, first, hours)
+    await _import_stats(hass, "sensor.test_export", 0.0, first, hours)
+    data = {"od": "2026-10-30", "poczatek_magazynu": "2026-09", "potwierdz": True}
+    await _call(hass, "inicjuj", data)
+    coordinator = entry.runtime_data
+    old_cost = next(r for r in coordinator.engine.state.history if r.month == "2026-10").koszt_razem
+    assert old_cost > 0
+
+    await coordinator.async_set_setting("energia_droga", "9.99")  # the tariff changes after the close
+    await _call(hass, "inicjuj", data)
+    row = next(r for r in coordinator.engine.state.history if r.month == "2026-10")
+    assert row.koszt_razem == old_cost
+    assert "changed cost" not in caplog.text
+
+
+async def test_collect_weather_uses_archive_for_old_days(hass, aioclient_mock):
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(
+        OPEN_METEO_ARCHIVE,
+        json={"daily": {"time": ["2026-06-01"], "shortwave_radiation_sum": [7.5]}},
+    )
+    aioclient_mock.get(
+        OPEN_METEO,
+        json={"daily": {"time": ["2026-11-20"], "shortwave_radiation_sum": [2.5]}},
+    )
+    from datetime import date
+
+    today = date(2026, 11, 22)
+    found = await async_collect_weather(hass, None, {}, [date(2026, 6, 1), date(2026, 11, 20)], today)
+    assert found == {"2026-06-01": {"radiation": 7.5}, "2026-11-20": {"radiation": 2.5}}
+    urls = [str(call[1]) for call in aioclient_mock.mock_calls]
+    assert sum(u.startswith(OPEN_METEO_ARCHIVE) for u in urls) == 1
+    assert "start_date=2026-06-01" in next(u for u in urls if u.startswith(OPEN_METEO_ARCHIVE))
+    assert "past_days=2" in next(u for u in urls if u.startswith(OPEN_METEO + "?"))

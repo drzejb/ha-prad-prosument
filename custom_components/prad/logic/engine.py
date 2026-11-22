@@ -127,7 +127,7 @@ class Engine:
                 add(month_c, hour)
             if day_c is not None:
                 add(day_c, hour)
-        if dropped:
+        if dropped and sum(abs(x) for h in result.hours for x in h.deltas) >= 0.01:
             warnings.append(f"{key}: {dropped} hours for closed month dropped")
         return values is not None
 
@@ -237,6 +237,7 @@ class Engine:
             temp_srednia=temp, stopniodni=dd, naslonecznienie_mj=radiation,
             wersja_cennika=tariff.version,
             consumers=dict(c.consumers), consumers_missing=dict(c.missing_hours),
+            tariff=dict(pending.tariff), storage_before_cross=pending.storage_before_cross,
         )
         st.history.append(row)
         if not before_start:

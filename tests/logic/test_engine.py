@@ -113,6 +113,26 @@ def test_secondary_tracker_hours_for_frozen_month():
     assert e.state.months["2026-12"].pv == pytest.approx(8.0)
 
 
+def test_no_dropped_warning_when_dropped_energy_is_zero():
+    e = engine()
+    e.state.pending["2026-11"] = pending("2026-11")
+    e.state.refs["pv"] = TrackerRef(dt(2026, 11, 30, 22), (116.0,))
+    e.state.refs["fox"] = TrackerRef(dt(2026, 12, 1, 1), (0.0, 0.0))
+    e.state.months["2026-12"] = Counters()
+    e.close_month("2026-11", dt(2026, 12, 1, 8), LIM)
+    warnings = e.on_tick(dt(2026, 12, 1, 0, 0, 10), None, 116.0, {}, LIM)
+    assert warnings == []
+
+
+def test_close_fills_frozen_inputs():
+    e = engine()
+    e.state.months["2026-11"] = Counters(import_peak=10.0)
+    e.state.refs["fox"] = TrackerRef(dt(2026, 12, 1), (0.0, 0.0))
+    e.freeze_month("2026-11", T, True)
+    row = e.catch_up(dt(2026, 12, 1, 1), replace(T, energy_peak=D("9")), False, LIM)[0]
+    assert row.tariff == T.to_dict() and row.storage_before_cross is True
+
+
 def test_close_uses_frozen_tariff():
     e = engine()
     e.state.months["2026-11"] = Counters(import_peak=100.0)

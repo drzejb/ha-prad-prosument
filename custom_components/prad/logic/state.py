@@ -138,6 +138,9 @@ class HistoryRow:
     consumers_missing: dict[str, int] = field(default_factory=dict)
     invoice: Decimal | None = None
     csv_written: bool = False
+    # Frozen inputs of the close, kept so that a rebuild does not re-price the month.
+    tariff: dict[str, str] | None = None
+    storage_before_cross: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -153,6 +156,8 @@ class HistoryRow:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> HistoryRow:
         values = dict(d)
+        if values.get("tariff") is not None:
+            values["tariff"] = {k: str(v) for k, v in values["tariff"].items()}
         for name in _DECIMAL_FIELDS:
             values[name] = Decimal(str(values[name]))
         if values.get("invoice") is not None:
