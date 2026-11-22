@@ -43,5 +43,53 @@
     "error": {
       "invalid_name": "Nazwa jest pusta albo już zajęta."
     }
+  },
+  "services": {
+    "magazyn_korekta": {
+      "name": "Korekta magazynu",
+      "description": "Dodaje (wartość dodatnia) albo odejmuje (ujemna) kWh w magazynie energii.",
+      "fields": {
+        "ilosc": {
+          "name": "Ilość",
+          "description": "Ilość kWh; ujemna zmniejsza stan magazynu."
+        },
+        "miesiac": {
+          "name": "Miesiąc",
+          "description": "Miesiąc wpływu w formacie RRRR-MM."
+        }
+      }
+    },
+    "wpisz_fakture": {
+      "name": "Wpisz fakturę",
+      "description": "Zapisuje kwotę faktury za zamknięty miesiąc i dopisuje ją do pliku CSV.",
+      "fields": {
+        "miesiac": {
+          "name": "Miesiąc",
+          "description": "Miesiąc faktury w formacie RRRR-MM."
+        },
+        "kwota": {
+          "name": "Kwota",
+          "description": "Kwota brutto faktury w zł."
+        }
+      }
+    },
+    "inicjuj": {
+      "name": "Odbuduj z historii",
+      "description": "Odbudowuje miesiące i magazyn od wskazanej daty ze statystyk godzinowych rejestratora.",
+      "fields": {
+        "od": {
+          "name": "Od dnia",
+          "description": "Pierwszy dzień odbudowy (czas lokalny)."
+        },
+        "poczatek_magazynu": {
+          "name": "Początek magazynu",
+          "description": "Pierwszy miesiąc rozliczany z magazynem, RRRR-MM."
+        },
+        "potwierdz": {
+          "name": "Potwierdzam",
+          "description": "Wymagane, gdy historia już istnieje; stan jest wtedy nadpisywany (kopia zapasowa zostaje)."
+        }
+      }
+    }
   }
 }

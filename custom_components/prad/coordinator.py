@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -28,6 +28,7 @@ from .const import (
     CONF_EXPORT,
     CONF_IMPORT,
     CONF_PV,
+    CONF_TEMP,
     CSV_CONSUMERS,
     CSV_DIR,
     CSV_MONTHS,
@@ -43,7 +44,8 @@ from .logic import csvio
 from .logic.engine import Engine, Limits
 from .logic.state import HistoryRow, State
 from .logic.tariff import Tariff
-from .logic.zones import month_key
+from .logic.zones import TZ, days_in_month, month_key
+from .weather import async_collect_weather, merge_weather
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -224,7 +226,10 @@ class PradCoordinator(DataUpdateCoordinator[None]):
     # ------------------------------------------------------------- close
 
     async def async_close_pending(self, now: datetime) -> None:
-        # Task 11: fetch weather before catch_up
+        try:
+            await self._async_fill_weather_for_closing(now)
+        except Exception:  # noqa: BLE001 - closing must not wait for weather
+            _LOGGER.warning("Weather for closing months could not be fetched, closing anyway")
         async with self.lock:
             self.engine.catch_up(now, self.tariff(), self.storage_before_cross(), self.limits())
             unwritten = [row for row in self.engine.state.history if not row.csv_written]
@@ -238,6 +243,34 @@ class PradCoordinator(DataUpdateCoordinator[None]):
                 row.csv_written = True
                 await self.async_save()
         self.async_update_listeners()
+
+    async def async_fill_weather(self, days: list[date]) -> None:
+        """Fill missing temperature and radiation for completed days (network outside the lock)."""
+        today = dt_util.now().astimezone(TZ).date()
+        found = await async_collect_weather(
+            self.hass, self.config_entry.data.get(CONF_TEMP), self.engine.state.weather, days, today
+        )
+        if found:
+            async with self.lock:
+                merge_weather(self.engine.state.weather, found)
+                await self.async_save()
+
+    async def _async_fill_weather_for_closing(self, now: datetime) -> None:
+        state = self.engine.state
+        current = month_key(now)
+        days = [
+            date(int(m[:4]), int(m[5:]), n)
+            for m in {*state.pending, *state.months}
+            if m < current
+            for n in range(1, days_in_month(m) + 1)
+        ]
+        if days:
+            await self.async_fill_weather(days)
+
+    async def async_update_weather(self, now: datetime) -> None:
+        """Fill weather gaps of the last 7 completed days."""
+        today = now.astimezone(TZ).date()
+        await self.async_fill_weather([today - timedelta(days=n) for n in range(1, 8)])
 
     def _write_csv(self, row: HistoryRow) -> None:
         base = Path(self.hass.config.path(CSV_DIR))

@@ -1,0 +1,47 @@
+magazyn_korekta:
+  fields:
+    ilosc:
+      required: true
+      example: 12.5
+      selector:
+        number:
+          mode: box
+          step: 0.001
+          unit_of_measurement: kWh
+    miesiac:
+      required: true
+      example: "2026-11"
+      selector:
+        text:
+wpisz_fakture:
+  fields:
+    miesiac:
+      required: true
+      example: "2026-10"
+      selector:
+        text:
+    kwota:
+      required: true
+      example: 447.37
+      selector:
+        number:
+          min: 0
+          mode: box
+          step: 0.01
+          unit_of_measurement: PLN
+inicjuj:
+  fields:
+    od:
+      required: true
+      selector:
+        date:
+    poczatek_magazynu:
+      required: true
+      example: "2026-11"
+      selector:
+        text:
+    potwierdz:
+      required: false
+      default: false
+      selector:
+        boolean:

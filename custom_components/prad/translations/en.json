@@ -43,5 +43,53 @@
     "error": {
       "invalid_name": "Name is empty or already used."
     }
+  },
+  "services": {
+    "magazyn_korekta": {
+      "name": "Storage correction",
+      "description": "Adds (positive) or removes (negative) kWh in the energy storage.",
+      "fields": {
+        "ilosc": {
+          "name": "Amount",
+          "description": "Amount in kWh; negative reduces the storage."
+        },
+        "miesiac": {
+          "name": "Month",
+          "description": "Inflow month as YYYY-MM."
+        }
+      }
+    },
+    "wpisz_fakture": {
+      "name": "Enter invoice",
+      "description": "Stores the invoice amount for a closed month and appends it to the CSV file.",
+      "fields": {
+        "miesiac": {
+          "name": "Month",
+          "description": "Invoice month as YYYY-MM."
+        },
+        "kwota": {
+          "name": "Amount",
+          "description": "Gross invoice amount in PLN."
+        }
+      }
+    },
+    "inicjuj": {
+      "name": "Rebuild from history",
+      "description": "Rebuilds months and storage from the given date using hourly recorder statistics.",
+      "fields": {
+        "od": {
+          "name": "From day",
+          "description": "First day of the rebuild (local time)."
+        },
+        "poczatek_magazynu": {
+          "name": "Storage start",
+          "description": "First month settled with storage, YYYY-MM."
+        },
+        "potwierdz": {
+          "name": "Confirm",
+          "description": "Required when history already exists; the state is overwritten (a backup is kept)."
+        }
+      }
+    }
   }
 }
