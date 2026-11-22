@@ -17,7 +17,9 @@ from .logic.zones import TZ
 _LOGGER = logging.getLogger(__name__)
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
-MAX_PAST_DAYS = 92  # Open-Meteo limit
+OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+MAX_PAST_DAYS = 92  # Open-Meteo forecast endpoint limit
+ARCHIVE_AFTER_DAYS = 90  # days older than this come from the archive endpoint
 REQUEST_TIMEOUT = 20
 RETRY_DELAY = 2.0  # seconds between the two attempts
 
@@ -32,21 +34,15 @@ def _row_start(value: Any) -> datetime:
     return datetime.fromtimestamp(float(value), tz=UTC)
 
 
-async def async_fetch_radiation(hass: HomeAssistant, past_days: int) -> dict[str, float]:
-    """Daily shortwave radiation sums (MJ/m2) keyed by local day; {} on any failure."""
-    params = {
-        "latitude": hass.config.latitude,
-        "longitude": hass.config.longitude,
-        "daily": "shortwave_radiation_sum",
-        "past_days": max(0, min(int(past_days), MAX_PAST_DAYS)),
-        "forecast_days": 1,
-        "timezone": "Europe/Warsaw",
-    }
+async def _async_fetch_daily_radiation(
+    hass: HomeAssistant, url: str, params: dict[str, Any]
+) -> dict[str, float]:
+    """One Open-Meteo daily radiation request with a retry; {} on any failure."""
     session = async_get_clientsession(hass)
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
     for attempt in (1, 2):
         try:
-            async with session.get(OPEN_METEO_URL, params=params, timeout=timeout) as resp:
+            async with session.get(url, params=params, timeout=timeout) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
             daily = data["daily"]
@@ -64,6 +60,32 @@ async def async_fetch_radiation(hass: HomeAssistant, past_days: int) -> dict[str
                 "Open-Meteo request failed: %s %s", type(err).__name__, getattr(err, "status", "-")
             )
     return {}
+
+
+async def async_fetch_radiation(hass: HomeAssistant, past_days: int) -> dict[str, float]:
+    """Daily shortwave radiation sums (MJ/m2) keyed by local day; {} on any failure."""
+    params = {
+        "latitude": hass.config.latitude,
+        "longitude": hass.config.longitude,
+        "daily": "shortwave_radiation_sum",
+        "past_days": max(0, min(int(past_days), MAX_PAST_DAYS)),
+        "forecast_days": 1,
+        "timezone": "Europe/Warsaw",
+    }
+    return await _async_fetch_daily_radiation(hass, OPEN_METEO_URL, params)
+
+
+async def async_fetch_radiation_archive(hass: HomeAssistant, first: date, last: date) -> dict[str, float]:
+    """Daily radiation for old days from the Open-Meteo archive; {} on any failure."""
+    params = {
+        "latitude": hass.config.latitude,
+        "longitude": hass.config.longitude,
+        "start_date": first.isoformat(),
+        "end_date": last.isoformat(),
+        "daily": "shortwave_radiation_sum",
+        "timezone": "Europe/Warsaw",
+    }
+    return await _async_fetch_daily_radiation(hass, OPEN_METEO_ARCHIVE_URL, params)
 
 
 async def async_daily_temperatures(
@@ -104,11 +126,16 @@ async def async_collect_weather(
         for d in need_temp:
             if d.isoformat() in temps:
                 found.setdefault(d.isoformat(), {})["temp"] = temps[d.isoformat()]
-    if need_rad:
-        rads = await async_fetch_radiation(hass, (today - min(need_rad)).days)
-        for d in need_rad:
-            if d.isoformat() in rads:
-                found.setdefault(d.isoformat(), {})["radiation"] = rads[d.isoformat()]
+    old_rad = [d for d in need_rad if (today - d).days > ARCHIVE_AFTER_DAYS]
+    recent_rad = [d for d in need_rad if (today - d).days <= ARCHIVE_AFTER_DAYS]
+    rads: dict[str, float] = {}
+    if old_rad:
+        rads.update(await async_fetch_radiation_archive(hass, min(old_rad), max(old_rad)))
+    if recent_rad:
+        rads.update(await async_fetch_radiation(hass, (today - min(recent_rad)).days))
+    for d in need_rad:
+        if d.isoformat() in rads:
+            found.setdefault(d.isoformat(), {})["radiation"] = rads[d.isoformat()]
     return found
 
 

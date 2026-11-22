@@ -20,4 +20,8 @@ def _open_meteo_mock(aioclient_mock):
         "https://api.open-meteo.com/v1/forecast",
         json={"daily": {"time": [], "shortwave_radiation_sum": []}},
     )
+    aioclient_mock.get(
+        "https://archive-api.open-meteo.com/v1/archive",
+        json={"daily": {"time": [], "shortwave_radiation_sum": []}},
+    )
     yield
