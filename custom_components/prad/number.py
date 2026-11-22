@@ -1,10 +1,12 @@
 """Tariff and limit settings as number entities (the Store is the only source of truth)."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from decimal import Decimal
 
 from homeassistant.components.number import NumberEntity, NumberMode
+from homeassistant.exceptions import ServiceValidationError
 
 from .const import NAME_PREFIX
 from .coordinator import PradCoordinator
@@ -95,4 +97,6 @@ class PradInvoiceAmount(PradEntity, NumberEntity):
         return None if amount is None else float(amount)
 
     async def async_set_native_value(self, value: float) -> None:
+        if not math.isfinite(value):
+            raise ServiceValidationError("Liczba musi być skończona")
         self.coordinator.set_invoice_amount(Decimal(str(value)))

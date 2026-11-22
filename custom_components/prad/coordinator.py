@@ -305,7 +305,11 @@ class PradCoordinator(DataUpdateCoordinator[None]):
     def invoice_form_month(self) -> str | None:
         """Chosen month, else the newest month without an invoice, else the newest month."""
         months = self.history_months()
-        if self.invoice_month in months:
+        if self.invoice_month is not None and self.invoice_month not in months:
+            # The chosen month left the history (e.g. a rebuild): drop the whole draft.
+            self.invoice_month = None
+            self.invoice_amount = None
+        if self.invoice_month is not None:
             return self.invoice_month
         for month in months:
             row = self._history_row(month)
@@ -326,7 +330,14 @@ class PradCoordinator(DataUpdateCoordinator[None]):
         self.async_update_listeners()
 
     def set_invoice_amount(self, amount: Decimal) -> None:
-        self.invoice_amount = amount
+        # Pin the month the amount was typed for, so a newly closed month cannot take it over.
+        self.invoice_month = self.invoice_form_month()
+        self.invoice_amount = amount.quantize(Decimal("0.01"))
+        self.async_update_listeners()
+
+    def clear_invoice_draft(self) -> None:
+        self.invoice_month = None
+        self.invoice_amount = None
         self.async_update_listeners()
 
     async def async_set_invoice(self, month: str, amount: Decimal) -> None:
