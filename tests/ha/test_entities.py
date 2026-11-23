@@ -35,7 +35,7 @@ async def test_setup_creates_entities(hass, freezer):
     assert hass.states.get("sensor.prad_dni") is not None
     assert hass.states.get("select.prad_porownanie_a") is not None
     assert hass.states.get("switch.prad_magazyn_przed_przeniesieniem").state == "off"
-    assert hass.states.get("text.prad_wersja_cennika").state == "2026-09 faktura"
+    assert hass.states.get("text.prad_wersja_cennika").state == "Tauron G12w 2026 (przykład – sprawdź z fakturą)"
     assert float(hass.states.get("number.prad_energia_droga").state) == pytest.approx(0.627)
 
 

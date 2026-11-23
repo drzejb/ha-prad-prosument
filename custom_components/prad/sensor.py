@@ -160,11 +160,16 @@ class PradPrice(PradEntity, SensorEntity):
 
     @property
     def native_value(self) -> float:
-        return float(price_now_gross(zone_at(dt_util.now()), self.coordinator.tariff()))
+        c = self.coordinator
+        pricing = c.pricing()
+        now = dt_util.now()
+        zone = zone_at(now, pricing.schedule_at(now))
+        return float(price_now_gross(zone, pricing.price_at(c.today())))
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {"strefa": zone_at(dt_util.now()).value}
+        now = dt_util.now()
+        return {"strefa": zone_at(now, self.coordinator.pricing().schedule_at(now)).value}
 
 
 class PradCounterSensor(PradEntity, SensorEntity):
@@ -227,7 +232,7 @@ class PradCostSensor(PradEntity, SensorEntity):
         # Follows the calendar month of now (current_snapshot), so in the first hour of a month
         # it differs from the energy bucket (last settled hour): intended.
         c = self.coordinator
-        snap = c.engine.current_snapshot(dt_util.now(), c.tariff(), c.storage_before_cross())
+        snap = c.engine.current_snapshot(dt_util.now(), c.pricing(), c.storage_before_cross())
         return snap.totals
 
     @property
@@ -260,7 +265,7 @@ class PradForecast(PradEntity, SensorEntity):
 
     def _snapshot(self):
         c = self.coordinator
-        return c.engine.forecast_snapshot(dt_util.now(), c.tariff(), c.storage_before_cross())
+        return c.engine.forecast_snapshot(dt_util.now(), c.pricing(), c.storage_before_cross())
 
     @property
     def native_value(self) -> float | None:
@@ -306,7 +311,7 @@ class PradStorage(PradEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         c = self.coordinator
         state = c.engine.state
-        inflow = c.engine.month_inflow(dt_util.now(), c.tariff(), c.storage_before_cross())
+        inflow = c.engine.month_inflow(dt_util.now(), c.pricing(), c.storage_before_cross())
         return {
             "wplywy": [
                 {

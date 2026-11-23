@@ -9,6 +9,7 @@ from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.exceptions import ServiceValidationError
 
 from .const import NAME_PREFIX
+from .logic.tariff import PriceListError
 from .coordinator import PradCoordinator
 from .entity import PradEntity
 
@@ -70,11 +71,14 @@ class PradNumber(PradEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        value = self.coordinator.settings.get(self._key)
+        value = self.coordinator.setting_value(self._key)
         return None if value is None else float(value)
 
     async def async_set_native_value(self, value: float) -> None:
-        await self.coordinator.async_set_setting(self._key, value)
+        try:
+            await self.coordinator.async_set_setting(self._key, value)
+        except (ValueError, PriceListError) as err:
+            raise ServiceValidationError(str(err)) from err
 
 
 class PradInvoiceAmount(PradEntity, NumberEntity):

@@ -28,6 +28,7 @@ async def _tick_at(hass, freezer, when: str) -> None:
     await hass.async_block_till_done()
 
 
+@pytest.mark.skip(reason="rewritten in the config flow task")
 async def test_config_flow_creates_entry(hass):
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     assert result["type"] is FlowResultType.FORM

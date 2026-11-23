@@ -26,8 +26,10 @@ class PradPeakZone(PradEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        return zone_at(dt_util.now()) is Zone.PEAK
+        now = dt_util.now()
+        return zone_at(now, self.coordinator.pricing().schedule_at(now)) is Zone.PEAK
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {"nastepna_zmiana": next_zone_change(dt_util.now()).isoformat()}
+        change = next_zone_change(dt_util.now(), self.coordinator.pricing().schedule_for)
+        return {"nastepna_zmiana": None if change is None else change.isoformat()}

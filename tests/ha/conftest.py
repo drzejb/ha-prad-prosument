@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "logic"))
+
 import pytest
 
 pytest_plugins = "pytest_homeassistant_custom_component"

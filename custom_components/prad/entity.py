@@ -4,7 +4,7 @@ from __future__ import annotations
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, ENTITY_ID_KEYS
 from .coordinator import PradCoordinator
 
 
@@ -22,7 +22,7 @@ class PradEntity(CoordinatorEntity[PradCoordinator]):
         and unique_id = f"prad_{key}".
         """
         super().__init__(coordinator)
-        self.entity_id = f"{platform}.{DOMAIN}_{key}"
+        self.entity_id = f"{platform}.{DOMAIN}_{ENTITY_ID_KEYS.get(key, key)}"
         self._attr_unique_id = f"{DOMAIN}_{key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.config_entry.entry_id)},

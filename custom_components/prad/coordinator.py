@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import math
 from datetime import date, datetime, timedelta
+from dataclasses import replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
@@ -24,28 +27,51 @@ from homeassistant.util import slugify
 
 from .const import (
     BACKUP_KEY,
+    BACKUP_V02_KEY,
     CONF_CONSUMERS,
     CONF_EXPORT,
+    CONF_GRID_MODE,
     CONF_IMPORT,
+    CONF_NET,
     CONF_PV,
+    CONF_START,
     CONF_TEMP,
     CSV_CONSUMERS,
     CSV_DIR,
     CSV_INVOICES,
     CSV_MONTHS,
     DOMAIN,
+    GRID_NET,
+    GRID_TWO,
+    KEY_PRICE_NAME,
+    KEY_RATIO,
+    NOTIFICATION_REBUILD,
+    PRICE_KEYS,
     RESERVED_SLUGS,
     SETTING_DEFAULTS,
     STORAGE_KEY,
     STORAGE_MINOR,
     STORAGE_VERSION,
-    TARIFF_FIELDS,
 )
 from .logic import csvio
 from .logic.engine import Engine, Limits
+from .logic.migrate import migrate_v1_to_v2
 from .logic.state import HistoryRow, State
-from .logic.tariff import Tariff
-from .logic.zones import TZ, days_in_month, month_key
+from .logic.tariff import (
+    OpustEntry,
+    PriceListError,
+    PriceVersion,
+    Pricing,
+    empty_price,
+    example_price,
+    price_at,
+    validate_opust,
+    validate_prices,
+    with_opust,
+    with_version,
+    zones_differ,
+)
+from .logic.zones import G11, TZ, ZoneSchedule, days_in_month, month_key
 from .weather import async_collect_weather, merge_weather
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,12 +81,27 @@ type SettingValue = Decimal | str | bool | None
 
 
 class PradStore(Store[dict[str, Any]]):
-    """Store with a hook for future schema migrations."""
+    """Store with the migration of the v0.2 file (price versions, segments)."""
 
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
     ) -> dict[str, Any]:
-        return old_data
+        if not (old_major_version == 1 and old_minor_version < 2):
+            return old_data
+        # One-off copy of the v0.2 file, never overwritten.
+        backup: Store[dict[str, Any]] = Store(self.hass, STORAGE_VERSION, BACKUP_V02_KEY)
+        if await backup.async_load() is None:
+            await backup.async_save(copy.deepcopy(old_data))
+        if not isinstance(old_data, dict) or "state" not in old_data:
+            raise ValueError("v0.2 payload without state")  # never turn it into an empty state
+        new = migrate_v1_to_v2(old_data, dt_util.now().astimezone(TZ).date())
+        # HA saves the file right after this function returns: validate the result first. Any exception
+        # propagates, so the file and its minor_version stay untouched (async_load turns it into an error).
+        State.from_dict(new["state"])
+        settings = new["settings"]
+        validate_prices([PriceVersion.from_dict(v) for v in settings["cenniki"]])
+        validate_opust([OpustEntry.from_dict(o) for o in settings["opust"]])
+        return new
 
 
 def coerce_setting(key: str, raw: Any) -> SettingValue:
@@ -105,6 +146,8 @@ class PradCoordinator(DataUpdateCoordinator[None]):
         self.settings: dict[str, SettingValue] = dict(SETTING_DEFAULTS)
         self.consumers: dict[str, str] = {}  # slug -> display name
         self.consumer_entities: dict[str, str] = {}  # slug -> entity_id
+        self.prices: list[PriceVersion] = [example_price(date(2026, 1, 1))]
+        self.opust: list[OpustEntry] = [OpustEntry(date(2026, 1, 1), Decimal("0.8"))]
         self.engine = Engine(State(), {})
         self._unloaded = False  # set on unload: later saves would overwrite the state of the new instance
         # Invoice form draft (select + number + button); in memory only, never stored.
@@ -125,26 +168,81 @@ class PradCoordinator(DataUpdateCoordinator[None]):
             self.consumers[slug] = item["name"]
             self.consumer_entities[slug] = item["entity_id"]
 
-        data = await self.store.async_load()
+        try:
+            data = await self.store.async_load()
+        except Exception as err:  # noqa: BLE001 - HA does not write the file when async_load raises
+            raise ConfigEntryError(
+                "Migracja stanu prad nie powiodła się; plik stanu nie został zmieniony"
+            ) from err
         if data is None:
             state = State(storage_start=month_key(dt_util.now()))
+            first = self.today().replace(day=1)
+            start = self.config_entry.data.get(CONF_START) or {}
+            layout = start.get("rozklad", "tauron_g12w")
+            try:
+                if layout == "tauron_g12w":
+                    price = example_price(first)
+                elif layout == "g11":
+                    price = empty_price(first, G11)
+                else:
+                    price = empty_price(first, ZoneSchedule.from_dict(start["strefy"]))
+                self.prices = [price]
+                self.opust = [OpustEntry(first, Decimal(str(start.get("opust", "0.8"))))]
+            except (KeyError, TypeError, ValueError, ArithmeticError, AttributeError) as err:
+                raise ConfigEntryError(f"Początkowe ustawienia cennika są niepoprawne: {err}") from err
         else:
             try:
                 state = State.from_dict(data["state"])
+                stored = data.get("settings")
+                self.prices = sorted(
+                    (PriceVersion.from_dict(v) for v in stored["cenniki"]), key=lambda v: v.od
+                )
+                self.opust = sorted((OpustEntry.from_dict(o) for o in stored["opust"]), key=lambda e: e.od)
+                validate_prices(self.prices)
+                validate_opust(self.opust)
             except (KeyError, TypeError, ValueError, ArithmeticError, AttributeError) as err:
                 # Never overwrite data that cannot be read: keep a copy and refuse to start.
                 await self.async_save_backup(data)
                 raise ConfigEntryError(f"Stored state of {DOMAIN} cannot be read: {err}") from err
-            stored = data.get("settings")
-            if isinstance(stored, dict):
-                for key in SETTING_DEFAULTS:
-                    if key not in stored:
-                        continue
-                    try:
-                        self.settings[key] = coerce_setting(key, stored[key])
-                    except (ValueError, TypeError, ArithmeticError):
-                        _LOGGER.warning("Invalid stored setting %s, using the default value", key)
-        self.engine = Engine(state, dict(self.consumers))
+            for key in SETTING_DEFAULTS:
+                if key not in stored:
+                    continue
+                try:
+                    self.settings[key] = coerce_setting(key, stored[key])
+                except (ValueError, TypeError, ArithmeticError):
+                    _LOGGER.warning("Invalid stored setting %s, using the default value", key)
+        self.engine = Engine(
+            state, dict(self.consumers), grid_mode=self.grid_mode(), has_pv=self.has_pv()
+        )
+        # Before the first tick: a changed meter set must drop its reference (net mode, PV, consumers).
+        if self.engine.sync_sources(self._source_signatures(), self.today()) or data is None:
+            await self.async_save()
+
+    def _source_signatures(self) -> dict[str, str]:
+        data = self.config_entry.data
+        if self.grid_mode() == GRID_NET:
+            signatures = {"fox": f"{GRID_NET}|{data.get(CONF_NET)}"}
+        else:
+            signatures = {"fox": f"{GRID_TWO}|{data.get(CONF_IMPORT)}|{data.get(CONF_EXPORT)}"}
+        if self.has_pv():
+            signatures["pv"] = str(data.get(CONF_PV))
+        for slug, entity_id in self.consumer_entities.items():
+            signatures[slug] = entity_id
+        return signatures
+
+    # ------------------------------------------------------------- config
+
+    def today(self) -> date:
+        return dt_util.now().astimezone(TZ).date()
+
+    def grid_mode(self) -> str:
+        return self.config_entry.data.get(CONF_GRID_MODE, GRID_TWO)
+
+    def has_pv(self) -> bool:
+        return bool(self.config_entry.data.get(CONF_PV))
+
+    def pricing(self) -> Pricing:
+        return Pricing(tuple(self.prices), tuple(self.opust))
 
     async def async_save_backup(self, data: dict[str, Any]) -> None:
         """Keep two backups: the latest in BACKUP_KEY and the one before it in BACKUP_KEY_prev."""
@@ -159,24 +257,24 @@ class PradCoordinator(DataUpdateCoordinator[None]):
     async def async_save(self, *, final: bool = False) -> None:
         if self._unloaded and not final:
             return
-        await self.store.async_save(
-            {
-                "state": self.engine.state.to_dict(),
-                "settings": {k: _serialize(v) for k, v in self.settings.items()},
-            }
-        )
+        await self.store.async_save(self.payload())
+
+    def payload(self) -> dict[str, Any]:
+        """The whole content of the Store (also used for the backup before prad.inicjuj)."""
+        return {
+            "state": self.engine.state.to_dict(),
+            "settings": {
+                **{k: _serialize(v) for k, v in self.settings.items()},
+                "cenniki": [v.to_dict() for v in self.prices],
+                "opust": [e.to_dict() for e in self.opust],
+            },
+        }
 
     async def async_save_locked(self, *, final: bool = False) -> None:
         async with self.lock:
             await self.async_save(final=final)
 
     # ---------------------------------------------------------- settings
-
-    def tariff(self) -> Tariff:
-        values: dict[str, Any] = {}
-        for key, field_name in TARIFF_FIELDS.items():
-            values[field_name] = self._setting_or_default(key)
-        return Tariff(**values)
 
     def limits(self) -> Limits:
         return Limits(
@@ -196,7 +294,77 @@ class PradCoordinator(DataUpdateCoordinator[None]):
             _LOGGER.warning("Invalid setting %s, using the default value", key)
             return SETTING_DEFAULTS[key]
 
+    def setting_value(self, key: str) -> Decimal | str | bool | None:
+        today = self.today()
+        if key in PRICE_KEYS:
+            return getattr(price_at(self.prices, today), PRICE_KEYS[key])
+        if key == KEY_PRICE_NAME:
+            return price_at(self.prices, today).nazwa
+        if key == KEY_RATIO:
+            return self.pricing().ratio_at(today)
+        return self.settings.get(key)
+
+    def _opust_today(self) -> OpustEntry:
+        today = self.today()
+        current = self.opust[0]
+        for entry in self.opust:
+            if entry.od <= today:
+                current = entry
+        return current
+
+    async def async_apply_prices(self, versions: list[PriceVersion], *, force: bool = False) -> None:
+        async with self.lock:
+            versions = sorted(versions, key=lambda v: v.od)
+            validate_prices(versions)
+            rng = self.engine.counted_range()
+            touched = rng is not None and zones_differ(self.prices, versions, *rng)
+            if touched and not force:
+                raise PriceListError(
+                    "counted_days",
+                    "Strefy tych dni są już policzone – dodaj nowy cennik od pierwszego dnia następnego "
+                    "miesiąca albo zaznacz »Zmieniam mimo policzonych dni« i potem uruchom prad.inicjuj",
+                )
+            self.prices = versions
+            await self.async_save()
+        self.async_update_listeners()
+        if touched and force:
+            persistent_notification.async_create(
+                self.hass,
+                "Uruchom prad.inicjuj, żeby przeliczyć strefy",
+                title="Prąd",
+                notification_id=NOTIFICATION_REBUILD,
+            )
+
+    async def async_apply_opust(self, entries: list[OpustEntry]) -> None:
+        async with self.lock:
+            entries = sorted(entries, key=lambda e: e.od)
+            validate_opust(entries)
+            self.opust = entries
+            await self.async_save()
+        self.async_update_listeners()
+
     async def async_set_setting(self, key: str, value: Any) -> None:
+        if key in PRICE_KEYS or key == KEY_PRICE_NAME:
+            current = price_at(self.prices, self.today())
+            if key == KEY_PRICE_NAME:
+                new = replace(current, nazwa=str(value).strip())
+            else:
+                try:
+                    number = Decimal(str(value))
+                except InvalidOperation as err:
+                    raise ValueError(f"{key}: invalid number") from err
+                new = replace(current, **{PRICE_KEYS[key]: number})
+            await self.async_apply_prices(with_version(self.prices, current.od, new))
+            return
+        if key == KEY_RATIO:
+            current_entry = self._opust_today()
+            try:
+                ratio = Decimal(str(value))
+            except InvalidOperation as err:
+                raise ValueError(f"{key}: invalid number") from err
+            new_entry = OpustEntry(current_entry.od, ratio)
+            await self.async_apply_opust(with_opust(self.opust, current_entry.od, new_entry))
+            return
         if key not in SETTING_DEFAULTS:
             raise ValueError(f"Unknown setting {key}")
         coerced = coerce_setting(key, value)
@@ -228,19 +396,23 @@ class PradCoordinator(DataUpdateCoordinator[None]):
 
     async def async_tick(self, now: datetime) -> None:
         data = self.config_entry.data
-        imp = self._read(data.get(CONF_IMPORT))
-        exp = self._read(data.get(CONF_EXPORT))
-        fox = None if imp is None or exp is None else (imp, exp)
+        if self.grid_mode() == GRID_NET:
+            net = self._read(data.get(CONF_NET))
+            fox = None if net is None else (net,)
+        else:
+            imp = self._read(data.get(CONF_IMPORT))
+            exp = self._read(data.get(CONF_EXPORT))
+            fox = None if imp is None or exp is None else (imp, exp)
         pv = self._read(data.get(CONF_PV))
         consumers = {slug: self._read(eid) for slug, eid in self.consumer_entities.items()}
         async with self.lock:
-            warnings = self.engine.on_tick(now, fox, pv, consumers, self.limits())
+            pricing = self.pricing()
+            warnings = self.engine.on_tick(now, fox, pv, consumers, self.limits(), pricing)
             for message in warnings:
                 _LOGGER.warning("%s", message)
-            tariff = self.tariff()
             before_cross = self.storage_before_cross()
             for month in self.engine.months_ready_to_freeze(now):
-                self.engine.freeze_month(month, tariff, before_cross)
+                self.engine.freeze_month(month, pricing, before_cross)
             await self.async_save()
         self.async_update_listeners()
 
@@ -253,7 +425,7 @@ class PradCoordinator(DataUpdateCoordinator[None]):
             _LOGGER.warning("Weather for closing months could not be fetched, closing anyway")
         try:
             async with self.lock:
-                self.engine.catch_up(now, self.tariff(), self.storage_before_cross(), self.limits())
+                self.engine.catch_up(now, self.pricing(), self.storage_before_cross(), self.limits())
                 unwritten = [row for row in self.engine.state.history if not row.csv_written]
                 # Store first (rows still csv_written=False), then CSV, then the flag.
                 # Saved unconditionally: catch_up may have frozen months without closing them.
