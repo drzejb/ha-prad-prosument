@@ -17,7 +17,7 @@ from homeassistant.util import dt as dt_util
 from .const import CONF_EXPORT, CONF_IMPORT, CONF_PV, CONF_TEMP
 from .logic.engine import Engine
 from .logic.state import State, inflow_from_dict, inflow_to_dict
-from .logic.tariff import Tariff
+from .logic.tariff import OpustEntry, Pricing
 from .logic.zones import TZ, month_key
 from .weather import async_collect_weather, merge_weather
 
@@ -70,16 +70,13 @@ async def async_rebuild(
         )
 
     old = coordinator.engine.state
-    await coordinator.async_save_backup(
-        {
-            "state": old.to_dict(),
-            "settings": {k: str(v) if isinstance(v, Decimal) else v for k, v in coordinator.settings.items()},
-        }
-    )
+    await coordinator.async_save_backup(coordinator.payload())
     warnings: list[str] = []
 
     from_month = month_key(start)
     new = State(storage_start=storage_start)
+    new.zrodla = dict(old.zrodla)
+    new.zmiana_licznika = old.zmiana_licznika
     new.history = [copy.deepcopy(r) for r in old.history if r.month < from_month]
     new.last_closed = max((r.month for r in new.history), default=None)
     od_key = start.date().isoformat()
@@ -98,7 +95,7 @@ async def async_rebuild(
         _LOGGER.warning("Month %s will be replaced by a partial month starting on %s", from_month, od_key)
     new.corrections = [dict(c) for c in old.corrections]
     new.weather = copy.deepcopy(old.weather)
-    prior = {r.month: r for r in old.history if r.month >= from_month and r.tariff is not None}
+    prior = {r.month: r for r in old.history if r.month >= from_month and r.segmenty}
     invoices = {r.month: r.invoice for r in old.history if r.month >= from_month and r.invoice is not None}
 
     # Weather first, so the months closed in the loop below get temperature and radiation.
@@ -112,7 +109,15 @@ async def async_rebuild(
     except Exception:  # noqa: BLE001 - weather must never block the rebuild
         _LOGGER.warning("Weather for the rebuild could not be fetched")
 
-    engine = Engine(new, dict(coordinator.consumers))
+    engine = Engine(new, dict(coordinator.consumers), grid_mode=coordinator.grid_mode(), has_pv=coordinator.has_pv())
+    # Closed months keep their frozen price versions and ratios: they are not re-priced.
+    engine.month_pricing = {
+        m: Pricing(
+            tuple(s.cennik for s in row.segmenty),
+            tuple(OpustEntry(r.od, r.wspolczynnik) for r in (row.segmenty_opustu or [])),
+        )
+        for m, row in prior.items()
+    }
     # Corrections to replay: months from the start date, or entered after the base was taken.
     # They are applied in time order, each before the first tick later than its time.
     created_at = datetime.fromisoformat(created)
@@ -135,7 +140,7 @@ async def async_rebuild(
                 "Storage correction %s kWh for %s skipped in rebuild", corr.get("amount"), corr.get("month")
             )
 
-    tariff, before_cross, limits = coordinator.tariff(), coordinator.storage_before_cross(), coordinator.limits()
+    pricing, before_cross, limits = coordinator.pricing(), coordinator.storage_before_cross(), coordinator.limits()
     last_hour = now.replace(minute=0, second=0, microsecond=0) - _HOUR
     hours = gaps = 0
     closed: list[str] = []
@@ -152,15 +157,14 @@ async def async_rebuild(
         tick = hour + _HOUR
         while replay and replay[0][0] < tick:
             apply_correction(replay.pop(0)[1])
-        engine.on_tick(tick, fox, value(pv_id), consumers, limits)
+        engine.on_tick(tick, fox, value(pv_id), consumers, limits, pricing)
         for month in engine.months_ready_to_freeze(tick):
             old_row = prior.get(month)
-            if old_row is not None and old_row.tariff is not None:
-                # Keep the tariff and switch the month was closed with, do not re-price it.
-                month_tariff = Tariff.from_dict(old_row.tariff)
+            if old_row is not None:
+                # Keep the price versions and the switch the month was closed with, do not re-price it.
                 month_cross = before_cross if old_row.storage_before_cross is None else old_row.storage_before_cross
-                engine.freeze_month(month, month_tariff, month_cross)
-        closed.extend(r.month for r in engine.catch_up(tick, tariff, before_cross, limits))
+                engine.freeze_month(month, pricing, month_cross)
+        closed.extend(r.month for r in engine.catch_up(tick, pricing, before_cross, limits))
         hours += 1
         hour = tick
         if hours % _YIELD_EVERY == 0:
@@ -188,6 +192,7 @@ async def async_rebuild(
         warnings.append("Faktury miesięcy niezamkniętych przez odbudowę zostały pominięte: " + ", ".join(sorted(invoices)))
         _LOGGER.warning("Invoices of months not closed by the rebuild were dropped: %s", sorted(invoices))
 
+    engine.month_pricing = {}
     coordinator.engine = engine
     await coordinator.async_save()
     try:

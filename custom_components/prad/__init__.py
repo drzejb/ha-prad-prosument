@@ -25,6 +25,25 @@ async def async_setup(hass, config) -> bool:
     return True
 
 
+async def async_migrate_entry(hass, entry) -> bool:
+    """Migrate the config entry: 1.1 -> 1.2 (grid mode, entity_id of the fuse number)."""
+    from homeassistant.helpers import entity_registry as er
+
+    from .const import CONF_GRID_MODE, DOMAIN, GRID_TWO
+
+    if entry.version > 1:
+        return False
+    if entry.version == 1 and entry.minor_version < 2:
+        data = {**entry.data, CONF_GRID_MODE: GRID_TWO}
+        registry = er.async_get(hass)
+        old = registry.async_get_entity_id("number", DOMAIN, "prad_bezpiecznik_fox")
+        # Only the untouched default id is renamed; a manually changed id stays as it is.
+        if old == "number.prad_bezpiecznik_fox" and registry.async_get("number.prad_bezpiecznik_siec") is None:
+            registry.async_update_entity(old, new_entity_id="number.prad_bezpiecznik_siec")
+        hass.config_entries.async_update_entry(entry, data=data, minor_version=2)
+    return True
+
+
 async def async_setup_entry(hass, entry) -> bool:
     """Set up Prad from a config entry."""
     from homeassistant.const import EVENT_HOMEASSISTANT_STOP

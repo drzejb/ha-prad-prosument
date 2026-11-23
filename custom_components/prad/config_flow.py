@@ -31,6 +31,7 @@ class PradConfigFlow(ConfigFlow, domain=DOMAIN):
     """Initial setup: pick the four source sensors."""
 
     VERSION = 1
+    MINOR_VERSION = 2
 
     @staticmethod
     @callback

@@ -7,12 +7,18 @@ DOMAIN = "prad"
 STORAGE_KEY = "prad"
 BACKUP_KEY = "prad_backup"
 STORAGE_VERSION = 1
-STORAGE_MINOR = 1
+STORAGE_MINOR = 2
+BACKUP_V02_KEY = "prad_backup_v02"
 
 CONF_IMPORT = "import_entity"
 CONF_EXPORT = "export_entity"
 CONF_PV = "pv_entity"
 CONF_TEMP = "temperature_entity"
+CONF_NET = "net_entity"
+CONF_GRID_MODE = "tryb_sieci"
+GRID_TWO = "dwa"
+GRID_NET = "netto"
+CONF_START = "start"  # entry.data: {"rozklad": str, "strefy": dict | None, "opust": str}; new installs only
 CONF_CONSUMERS = "consumers"  # list of {"name": str, "entity_id": str}
 
 RESERVED_SLUGS = frozenset({"fox", "pv"})  # engine tracker keys
@@ -26,23 +32,8 @@ NAME_PREFIX = "Prąd – "  # display-name prefix of every entity
 
 PLATFORMS = ["sensor", "binary_sensor", "number", "text", "switch", "select", "button"]
 
-# Key = tail of the setting entity_id (entities themselves come in Task 10).
+# Key = tail of the setting entity_id; only settings kept in `settings` (prices live in price versions).
 SETTING_DEFAULTS: dict[str, Decimal | str | bool | None] = {
-    "energia_droga": Decimal("0.627"),
-    "energia_tania": Decimal("0.418"),
-    "dystrybucja_droga": Decimal("0.3298"),
-    "dystrybucja_tania": Decimal("0.0512"),
-    "oplata_jakosciowa": Decimal("0.0332"),
-    "oplata_oze": Decimal("0.0073"),
-    "oplata_kogeneracyjna": Decimal("0.003"),
-    "oplata_sieciowa_stala": Decimal("10.86"),
-    "oplata_abonamentowa": Decimal("4.56"),
-    "oplata_mocowa": Decimal("24.05"),
-    "oplata_handlowa": Decimal("0"),
-    "oplata_przejsciowa": Decimal("0"),
-    "vat": Decimal("23"),
-    "wspolczynnik_opustu": Decimal("0.8"),
-    "wersja_cennika": "2026-09 faktura",
     "bezpiecznik_fox": Decimal("30"),
     "bezpiecznik_pv": Decimal("12"),
     "bezpiecznik_odbiorniki": Decimal("5"),
@@ -52,8 +43,11 @@ SETTING_DEFAULTS: dict[str, Decimal | str | bool | None] = {
     "porownanie_b": None,
 }
 
-# Setting key -> Tariff field name.
-TARIFF_FIELDS: dict[str, str] = {
+# Setting entity key -> entity_id tail, where it differs from the key (unique_id keeps the key).
+ENTITY_ID_KEYS: dict[str, str] = {"bezpiecznik_fox": "bezpiecznik_siec"}
+
+# Setting key -> PriceVersion field (edits the version valid today).
+PRICE_KEYS: dict[str, str] = {
     "energia_droga": "energy_peak",
     "energia_tania": "energy_offpeak",
     "dystrybucja_droga": "dist_peak",
@@ -67,6 +61,7 @@ TARIFF_FIELDS: dict[str, str] = {
     "oplata_handlowa": "trade",
     "oplata_przejsciowa": "transition",
     "vat": "vat_percent",
-    "wspolczynnik_opustu": "credit_ratio",
-    "wersja_cennika": "version",
 }
+KEY_PRICE_NAME = "wersja_cennika"
+KEY_RATIO = "wspolczynnik_opustu"
+NOTIFICATION_REBUILD = "prad_inicjuj"

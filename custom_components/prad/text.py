@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from homeassistant.components.text import TextEntity, TextMode
+from homeassistant.exceptions import ServiceValidationError
 
 from .const import NAME_PREFIX
 from .coordinator import PradCoordinator
 from .entity import PradEntity
+from .logic.tariff import PriceListError
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
@@ -25,8 +27,11 @@ class PradTariffVersion(PradEntity, TextEntity):
 
     @property
     def native_value(self) -> str | None:
-        value = self.coordinator.settings.get("wersja_cennika")
+        value = self.coordinator.setting_value("wersja_cennika")
         return None if value is None else str(value)
 
     async def async_set_value(self, value: str) -> None:
-        await self.coordinator.async_set_setting("wersja_cennika", value)
+        try:
+            await self.coordinator.async_set_setting("wersja_cennika", value)
+        except (ValueError, PriceListError) as err:
+            raise ServiceValidationError(str(err)) from err
