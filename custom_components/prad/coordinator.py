@@ -5,6 +5,7 @@ import asyncio
 import copy
 import logging
 import math
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from dataclasses import replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -149,6 +150,8 @@ class PradCoordinator(DataUpdateCoordinator[None]):
         self.prices: list[PriceVersion] = [example_price(date(2026, 1, 1))]
         self.opust: list[OpustEntry] = [OpustEntry(date(2026, 1, 1), Decimal("0.8"))]
         self.engine = Engine(State(), {})
+        # Meter ids and grid mode, snapshotted in async_load: the same values the engine is synced with.
+        self.source_data: Mapping[str, Any] = dict(entry.data)
         self._unloaded = False  # set on unload: later saves would overwrite the state of the new instance
         # Invoice form draft (select + number + button); in memory only, never stored.
         self.invoice_month: str | None = None
@@ -160,6 +163,7 @@ class PradCoordinator(DataUpdateCoordinator[None]):
     # ----------------------------------------------------------- storage
 
     async def async_load(self) -> None:
+        self.source_data = dict(self.config_entry.data)
         for item in self.config_entry.options.get(CONF_CONSUMERS, []):
             slug = slugify(item["name"])
             if not slug or slug in RESERVED_SLUGS:
@@ -219,7 +223,7 @@ class PradCoordinator(DataUpdateCoordinator[None]):
             await self.async_save()
 
     def _source_signatures(self) -> dict[str, str]:
-        data = self.config_entry.data
+        data = self.source_data
         if self.grid_mode() == GRID_NET:
             signatures = {"fox": f"{GRID_NET}|{data.get(CONF_NET)}"}
         else:
@@ -236,10 +240,10 @@ class PradCoordinator(DataUpdateCoordinator[None]):
         return dt_util.now().astimezone(TZ).date()
 
     def grid_mode(self) -> str:
-        return self.config_entry.data.get(CONF_GRID_MODE, GRID_TWO)
+        return self.source_data.get(CONF_GRID_MODE, GRID_TWO)
 
     def has_pv(self) -> bool:
-        return bool(self.config_entry.data.get(CONF_PV))
+        return bool(self.source_data.get(CONF_PV))
 
     def pricing(self) -> Pricing:
         return Pricing(tuple(self.prices), tuple(self.opust))
@@ -424,7 +428,7 @@ class PradCoordinator(DataUpdateCoordinator[None]):
         return value
 
     async def async_tick(self, now: datetime) -> None:
-        data = self.config_entry.data
+        data = self.source_data
         if self.grid_mode() == GRID_NET:
             net = self._read(data.get(CONF_NET))
             fox = None if net is None else (net,)
@@ -470,7 +474,7 @@ class PradCoordinator(DataUpdateCoordinator[None]):
         """Fill missing temperature and radiation for completed days (network outside the lock)."""
         today = dt_util.now().astimezone(TZ).date()
         found = await async_collect_weather(
-            self.hass, self.config_entry.data.get(CONF_TEMP), self.engine.state.weather, days, today
+            self.hass, self.source_data.get(CONF_TEMP), self.engine.state.weather, days, today
         )
         if found:
             async with self.lock:

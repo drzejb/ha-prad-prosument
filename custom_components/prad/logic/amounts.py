@@ -84,14 +84,23 @@ def split_kwh(total: Decimal, weights: list[Decimal]) -> list[Decimal]:
 
 
 def split_proportional(total: Decimal, weights: list[Decimal]) -> list[Decimal]:
-    """Proportional split to 0.001 kWh; the last segment takes the remainder."""
+    """Proportional split to 0.001 kWh, never negative: floor, then leftover milli-units to the largest
+    remainders (ties -> earlier); a sub-milli rest goes to the heaviest segment (ties -> earlier). Sum is exact."""
     if len(weights) == 1:
         return [total]
     weight_sum = sum(weights, _ZERO)
     if weight_sum == 0:
         return [total] + [_ZERO] * (len(weights) - 1)
-    parts = [(total * w / weight_sum).quantize(_MILLI, ROUND_HALF_UP) for w in weights[:-1]]
-    parts.append(total - sum(parts, _ZERO))
+    if total < 0:
+        raise ValueError("Niepoprawny podział")
+    shares = [total * w / weight_sum for w in weights]
+    parts = [sh.quantize(_MILLI, ROUND_FLOOR) for sh in shares]
+    units = int((total - sum(parts, _ZERO)) / _MILLI)
+    order = sorted(range(len(weights)), key=lambda i: (-(shares[i] - parts[i]), i))
+    for i in order[:units]:
+        parts[i] += _MILLI
+    heaviest = max(range(len(weights)), key=lambda i: (weights[i], -i))
+    parts[heaviest] += total - sum(parts, _ZERO)
     return parts
 
 

@@ -1,6 +1,7 @@
 """Services, rebuild from recorder statistics and Open-Meteo tolerance."""
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 import voluptuous as vol
@@ -10,7 +11,7 @@ from homeassistant.exceptions import ServiceValidationError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.components.recorder.common import async_wait_recording_done
 
-from custom_components.prad.const import DOMAIN
+from custom_components.prad.const import DOMAIN, NOTIFICATION_REBUILD
 from custom_components.prad.logic.settlement import Inflow
 from custom_components.prad.logic.zones import Zone
 from custom_components.prad.weather import async_collect_weather, async_fetch_radiation
@@ -29,11 +30,6 @@ def _mock_meteo(aioclient_mock, **kwargs) -> None:
     aioclient_mock.clear_requests()
     aioclient_mock.get(OPEN_METEO, **kwargs)
     aioclient_mock.get(OPEN_METEO_ARCHIVE, **kwargs)
-
-
-@pytest.fixture(autouse=True)
-def _no_retry_delay(monkeypatch):
-    monkeypatch.setattr("custom_components.prad.weather.RETRY_DELAY", 0)
 
 
 async def _setup_entry(hass, tmp_path) -> MockConfigEntry:
@@ -470,3 +466,14 @@ async def test_inicjuj_reuses_frozen_zones_of_closed_month(hass, freezer, tmp_pa
     assert again == october                                                     # zamknięty miesiąc: strefy i ceny zamrożone
     november = c.engine.state.months["2026-11"]
     assert november.import_offpeak == 0 and november.import_peak > 0            # otwarty miesiąc: bieżący cennik G11
+
+
+async def test_inicjuj_dismisses_the_rebuild_notification(hass, freezer, tmp_path, aioclient_mock):
+    freezer.move_to(NOW)
+    _mock_meteo(aioclient_mock, status=500)
+    await _setup_entry(hass, tmp_path)
+    await _import_stats(hass, "sensor.test_import", 0.5)
+    await _import_stats(hass, "sensor.test_export", 0.0)
+    with patch("custom_components.prad.recorder_import.persistent_notification.async_dismiss") as dismiss:
+        await _call(hass, "inicjuj", {"od": "2026-11-23", "poczatek_magazynu": "2026-11"})
+    dismiss.assert_called_once_with(hass, NOTIFICATION_REBUILD)

@@ -135,6 +135,8 @@ Gotowy pulpit jest w [`dashboards/prad.yaml`](dashboards/prad.yaml): dwie zakła
 
 Stan jest przenoszony przy pierwszym uruchomieniu v0.3. Kopia sprzed migracji leży w `.storage/prad_backup_v02`. Powrotu do v0.2 nie ma. Encja `number.prad_bezpiecznik_fox` zmienia `entity_id` na `number.prad_bezpiecznik_siec` (chyba że zmieniono go ręcznie).
 
+**Gdy migracja się nie powiedzie:** integracja pokazuje błąd uruchomienia („Migracja stanu prad nie powiodła się; plik stanu nie został zmieniony”) i się nie ładuje. Plik `.storage/prad` zostaje nietknięty (w formacie v0.2), a jego kopia leży w `.storage/prad_backup_v02`. Nic nie jest liczone ani nadpisywane, dopóki błąd nie zostanie usunięty. Żeby wrócić do v0.2: zatrzymaj Home Assistant, zainstaluj z HACS wersję v0.2, skopiuj `.storage/prad_backup_v02` na `.storage/prad` (w skopiowanym pliku zmień wartość `"key"` z `prad_backup_v02` na `prad`) i uruchom Home Assistant. Plik z błędem zgłoś razem z logiem.
+
 ## Ograniczenia
 
 - Taryfy G11, G12 (jako własne godziny) i G12w; rozliczenie miesięczne w net-meteringu; licznik zdalny; opust ze współczynnikiem zmiennym w czasie.
@@ -147,4 +149,4 @@ Integracja wysyła **położenie domu z ustawień Home Assistant** (szerokość 
 
 ## English summary
 
-Home Assistant custom integration for Polish net-metering prosumers (G11/G12/G12w, dated price lists, single net meter, monthly settlement). It settles meter increments hourly per time zone, runs the 12-month energy store, estimates the monthly bill and keeps a monthly history with CSV export, temperature, degree days and solar radiation. Install via HACS as a custom repository; a ready dashboard (ApexCharts Card) is in `dashboards/prad.yaml`. The integration sends the home location configured in Home Assistant to Open-Meteo for radiation data; no other data leaves your instance.
+Home Assistant custom integration for Polish net-metering prosumers (G11/G12/G12w, dated price lists, single net meter, monthly settlement). It settles meter increments hourly per time zone, runs the 12-month energy store, estimates the monthly bill and keeps a monthly history with CSV export, temperature, degree days and solar radiation. Install via HACS as a custom repository; a ready dashboard (ApexCharts Card) is in `dashboards/prad.yaml`. The integration sends the home location configured in Home Assistant to Open-Meteo for solar radiation data and, when no temperature sensor is selected, for the mean temperature; no other data leaves your instance.

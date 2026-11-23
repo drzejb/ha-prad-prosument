@@ -496,15 +496,14 @@ class PradOptionsFlow(OptionsFlow):
         strefy = self._schedule if self._schedule is not None and self._schedule.id == "wlasne" else None
         if strefy is None:
             strefy = self._price_base(coordinator).strefy
-            keep_weekend = False
-        else:
-            keep_weekend = strefy.taryfa == ("G12w" if self._rozklad == "wlasne_g12w" else "G12")
+        # the stored (or earlier entered) weekend only makes sense for the same tariff; a new layout gets its default
+        keep_weekend = strefy.taryfa == ("G12w" if self._rozklad == "wlasne_g12w" else "G12")
         if strefy.id == "wlasne":
             for i, (start, end) in enumerate(strefy.tanie_robocze[:3], start=1):
                 defaults[f"tanie{i}_od"] = start
                 defaults[f"tanie{i}_do"] = end
             defaults["swieta"] = strefy.swieta
-            if keep_weekend:  # the user's own earlier input in this flow
+            if keep_weekend:
                 defaults["weekend"] = strefy.weekend
         if user_input is not None:
             try:
@@ -548,7 +547,7 @@ class PradOptionsFlow(OptionsFlow):
                 await coordinator.async_edit_prices(self._edit_od, new, force=self._force)
             except PriceListError as err:
                 self._entered = {k: v for k, v in user_input.items() if k in keys}
-                if err.code == "counted_days":  # the force checkbox lives on cennik_dane
+                if err.code in ("counted_days", "zone_change_not_first", "duplicate_date"):  # only the dane step can fix these
                     return self._show_dane(self._dane_values(), {"base": err.code})
                 errors["base"] = err.code
             except (ValueError, ArithmeticError):

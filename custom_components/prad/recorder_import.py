@@ -8,13 +8,14 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.components import persistent_notification
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_EXPORT, CONF_IMPORT, CONF_NET, CONF_PV, CONF_TEMP, GRID_NET
+from .const import CONF_EXPORT, CONF_IMPORT, CONF_NET, CONF_PV, CONF_TEMP, GRID_NET, NOTIFICATION_REBUILD
 from .logic.engine import Engine
 from .logic.state import State, inflow_from_dict, inflow_to_dict
 from .logic.tariff import OpustEntry, Pricing
@@ -42,7 +43,7 @@ async def async_rebuild(
 
     Must be called with coordinator.lock held.
     """
-    data = coordinator.config_entry.data
+    data = coordinator.source_data
     net_mode = coordinator.grid_mode() == GRID_NET
     import_id, export_id, pv_id = data.get(CONF_IMPORT), data.get(CONF_EXPORT), data.get(CONF_PV)
     net_id = data.get(CONF_NET)
@@ -221,6 +222,7 @@ async def async_rebuild(
         coordinator.async_update_listeners()  # state is already swapped and saved
         raise ServiceValidationError("Nie udało się zapisać pliku CSV; spróbuj ponownie") from err
     coordinator.async_update_listeners()
+    persistent_notification.async_dismiss(hass, NOTIFICATION_REBUILD)  # "run prad.inicjuj" is done
     if gaps:
         warnings.append(f"Brak odczytów licznika w {gaps} godzinach")
         _LOGGER.warning("Rebuild had %d hours without a grid meter reading", gaps)
