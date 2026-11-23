@@ -189,7 +189,8 @@ def _downgrade(payload: dict) -> dict:
     return {"state": state, "settings": dict(V02_SETTINGS)}
 
 
-async def test_inicjuj_gives_same_rows_before_and_after_migration(hass, hass_storage, freezer, tmp_path, aioclient_mock):
+async def test_inicjuj_gives_same_rows_before_and_after_migration(hass, hass_storage, freezer, tmp_path, aioclient_mock, monkeypatch):
+    monkeypatch.setattr("custom_components.prad.weather.RETRY_DELAY", 0)  # frozen clock: a real sleep would never end
     freezer.move_to("2026-11-02 12:00:00+01:00")
     aioclient_mock.clear_requests()
     aioclient_mock.get("https://api.open-meteo.com/v1/forecast", status=500)
