@@ -344,12 +344,14 @@ async def test_collect_weather_fills_forecast_gaps_from_archive(hass, aioclient_
     aioclient_mock.clear_requests()
     aioclient_mock.get(
         OPEN_METEO_ARCHIVE,
-        json={"daily": {"time": ["2026-09-01", "2026-09-02"], "shortwave_radiation_sum": [9.0, 8.0]}},
+        json={"daily": {"time": ["2026-09-01", "2026-09-02"], "shortwave_radiation_sum": [9.0, 8.0],
+                        "temperature_2m_mean": [1.0, 1.0]}},
     )
     aioclient_mock.get(
         OPEN_METEO,
         json={"daily": {"time": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-11-20"],
-                        "shortwave_radiation_sum": [None, None, 6.0, 2.5]}},
+                        "shortwave_radiation_sum": [None, None, 6.0, 2.5],
+                        "temperature_2m_mean": [5.0, 5.0, 5.0, 5.0]}},
     )
     from datetime import date
 
@@ -357,10 +359,10 @@ async def test_collect_weather_fills_forecast_gaps_from_archive(hass, aioclient_
     days = [date(2026, 9, 1), date(2026, 9, 2), date(2026, 9, 3), date(2026, 11, 20)]
     found = await async_collect_weather(hass, None, {}, days, today)
     assert found == {
-        "2026-09-01": {"radiation": 9.0},
-        "2026-09-02": {"radiation": 8.0},
-        "2026-09-03": {"radiation": 6.0},
-        "2026-11-20": {"radiation": 2.5},
+        "2026-09-01": {"radiation": 9.0, "temp": 5.0},
+        "2026-09-02": {"radiation": 8.0, "temp": 5.0},
+        "2026-09-03": {"radiation": 6.0, "temp": 5.0},
+        "2026-11-20": {"radiation": 2.5, "temp": 5.0},
     }
     archive = [str(c[1]) for c in aioclient_mock.mock_calls if str(c[1]).startswith(OPEN_METEO_ARCHIVE)]
     assert len(archive) == 1
@@ -376,3 +378,95 @@ async def test_collect_weather_does_not_ask_archive_for_last_week(hass, aioclien
     found = await async_collect_weather(hass, None, {}, [date(2026, 11, 20)], date(2026, 11, 22))
     assert found == {}
     assert not any(str(c[1]).startswith(OPEN_METEO_ARCHIVE) for c in aioclient_mock.mock_calls)
+
+
+async def test_collect_weather_missing_temperature_is_a_gap_for_archive(hass, aioclient_mock):
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(OPEN_METEO_ARCHIVE, json={"daily": {"time": ["2026-11-10"], "shortwave_radiation_sum": [9.9], "temperature_2m_mean": [6.5]}})
+    aioclient_mock.get(OPEN_METEO, json={"daily": {"time": ["2026-11-10"], "shortwave_radiation_sum": [2.5], "temperature_2m_mean": [None]}})
+    from datetime import date
+    found = await async_collect_weather(hass, None, {}, [date(2026, 11, 10)], date(2026, 11, 22))
+    assert found == {"2026-11-10": {"radiation": 2.5, "temp": 6.5}}
+    assert sum(str(c[1]).startswith(OPEN_METEO_ARCHIVE) for c in aioclient_mock.mock_calls) == 1
+
+
+async def test_collect_weather_takes_temperature_from_open_meteo_without_sensor(hass, aioclient_mock):
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(OPEN_METEO_ARCHIVE, json={"daily": {"time": [], "shortwave_radiation_sum": []}})
+    aioclient_mock.get(OPEN_METEO, json={"daily": {"time": ["2026-11-20", "2026-11-21"],
+                                                    "shortwave_radiation_sum": [2.5, None], "temperature_2m_mean": [4.5, 3.0]}})
+    from datetime import date
+    weather = {"2026-11-21": {"radiation": 1.0}}
+    found = await async_collect_weather(hass, None, weather, [date(2026, 11, 20), date(2026, 11, 21)], date(2026, 11, 22))
+    assert found == {"2026-11-20": {"radiation": 2.5, "temp": 4.5}, "2026-11-21": {"temp": 3.0}}
+    url = next(str(c[1]) for c in aioclient_mock.mock_calls if str(c[1]).startswith(OPEN_METEO + "?"))
+    assert "temperature_2m_mean" in url
+
+
+async def test_collect_weather_with_sensor_does_not_ask_for_temperature(hass, aioclient_mock):
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(OPEN_METEO_ARCHIVE, json={"daily": {"time": [], "shortwave_radiation_sum": []}})
+    aioclient_mock.get(OPEN_METEO, json={"daily": {"time": ["2026-11-20"], "shortwave_radiation_sum": [2.5], "temperature_2m_mean": [4.5]}})
+    from datetime import date
+    found = await async_collect_weather(hass, "sensor.test_temperature", {}, [date(2026, 11, 20)], date(2026, 11, 22))
+    assert found == {"2026-11-20": {"radiation": 2.5}}
+    assert not any("temperature_2m_mean" in str(c[1]) for c in aioclient_mock.mock_calls)
+
+
+async def test_inicjuj_net_meter(hass, freezer, tmp_path, aioclient_mock):
+    freezer.move_to(NOW)
+    _mock_meteo(aioclient_mock, status=500)
+    hass.config.config_dir = str(tmp_path)
+    entry = MockConfigEntry(domain=DOMAIN, data={"tryb_sieci": "netto", "net_entity": "sensor.test_net"},
+                            options={"consumers": []}, version=1, minor_version=2)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await _import_stats(hass, "sensor.test_net", -0.5)                       # licznik maleje: oddawanie 0,5 kWh/h
+    data = {"od": "2026-11-23", "poczatek_magazynu": "2026-11"}
+    hass.states.async_set("sensor.test_net", "58", {"unit_of_measurement": "kWh", "state_class": "total_increasing"})
+    with pytest.raises(ServiceValidationError, match="state_class: total"):
+        await _call(hass, "inicjuj", data)
+    hass.states.async_set("sensor.test_net", "58", {"unit_of_measurement": "kWh", "state_class": "total"})
+    result = await _call(hass, "inicjuj", data)
+    c = entry.runtime_data.engine.state.months["2026-11"]
+    assert c.export_peak + c.export_offpeak == pytest.approx(0.5 * 84) and c.import_peak + c.import_offpeak == pytest.approx(0)
+    assert c.pv_brak is True and result["przerwy"] == 0
+
+
+async def test_inicjuj_rejects_start_before_meter_change(hass, freezer, tmp_path, aioclient_mock):
+    freezer.move_to(NOW)
+    _mock_meteo(aioclient_mock, status=500)
+    entry = await _setup_entry(hass, tmp_path)
+    await _import_stats(hass, "sensor.test_import", 0.5)
+    await _import_stats(hass, "sensor.test_export", 0.0)
+    entry.runtime_data.engine.state.zmiana_licznika = "2026-11-24"
+    with pytest.raises(ServiceValidationError, match="Liczniki zmieniono 2026-11-24"):
+        await _call(hass, "inicjuj", {"od": "2026-11-23", "poczatek_magazynu": "2026-11"})
+    await _call(hass, "inicjuj", {"od": "2026-11-24", "poczatek_magazynu": "2026-11"})
+    state = entry.runtime_data.engine.state
+    assert state.zmiana_licznika == "2026-11-24" and state.zrodla["fox"] == "dwa|sensor.test_import|sensor.test_export"
+
+
+async def test_inicjuj_reuses_frozen_zones_of_closed_month(hass, freezer, tmp_path, aioclient_mock):
+    from dataclasses import replace
+    from custom_components.prad.logic.zones import G11
+
+    freezer.move_to("2026-11-02 12:00:00+01:00")
+    _mock_meteo(aioclient_mock, status=500)
+    entry = await _setup_entry(hass, tmp_path)
+    first = datetime(2026, 10, 29, 22, 0, tzinfo=UTC)
+    hours = int((datetime(2026, 11, 2, 10, 0, tzinfo=UTC) - first) / timedelta(hours=1)) + 1
+    await _import_stats(hass, "sensor.test_import", 0.5, first, hours)
+    await _import_stats(hass, "sensor.test_export", 0.0, first, hours)
+    data = {"od": "2026-10-30", "poczatek_magazynu": "2026-09", "potwierdz": True}
+    await _call(hass, "inicjuj", data)
+    c = entry.runtime_data
+    october = next(r for r in c.engine.state.history if r.month == "2026-10").to_dict()
+    assert Decimal(october["pobor_tania"]) > 0                                  # 31.10 to sobota: strefa tania w G12w
+    await c.async_apply_prices([replace(c.prices[0], taryfa="G11", strefy=G11)], force=True)
+    await _call(hass, "inicjuj", data)
+    again = next(r for r in c.engine.state.history if r.month == "2026-10").to_dict()
+    assert again == october                                                     # zamknięty miesiąc: strefy i ceny zamrożone
+    november = c.engine.state.months["2026-11"]
+    assert november.import_offpeak == 0 and november.import_peak > 0            # otwarty miesiąc: bieżący cennik G11
