@@ -95,6 +95,106 @@
           "pv_entity": "Produkcja PV (opcjonalnie)",
           "temperature_entity": "Temperatura zewnętrzna (opcjonalnie)"
         }
+      },
+      "cenniki": {
+        "title": "Cenniki",
+        "description": "Wersje cennika:\n{lista}\n\nNową cenę od przyszłej daty dodaj tutaj, nie przez pola number.prad_* (one poprawiają cennik obowiązujący dziś).",
+        "menu_options": {
+          "cennik_add": "Dodaj cennik od daty",
+          "cennik_edit": "Popraw cennik",
+          "cennik_remove": "Usuń cennik"
+        }
+      },
+      "cennik_edit": {
+        "title": "Popraw cennik",
+        "data": {
+          "wersja": "Cennik"
+        }
+      },
+      "cennik_dane": {
+        "title": "Cennik – data i taryfa",
+        "description": "Cena zmienia się o północy podanego dnia. Zmiana taryfy albo godzin stref jest możliwa tylko od pierwszego dnia miesiąca.",
+        "data": {
+          "od": "Obowiązuje od",
+          "nazwa": "Nazwa",
+          "rozklad": "Taryfa i godziny stref",
+          "force": "Zmieniam mimo policzonych dni (potem uruchomię prad.inicjuj)"
+        }
+      },
+      "cennik_ceny": {
+        "title": "Cennik – ceny netto",
+        "description": "Ceny netto z faktury albo taryfy: za kWh (energia, dystrybucja, opłaty) i za miesiąc (opłaty stałe).",
+        "data": {
+          "energia_droga": "Energia – strefa droga / całodobowa (zł/kWh)",
+          "energia_tania": "Energia – strefa tania (zł/kWh)",
+          "dystrybucja_droga": "Dystrybucja zmienna – droga / całodobowa (zł/kWh)",
+          "dystrybucja_tania": "Dystrybucja zmienna – tania (zł/kWh)",
+          "oplata_jakosciowa": "Opłata jakościowa (zł/kWh)",
+          "oplata_oze": "Opłata OZE (zł/kWh)",
+          "oplata_kogeneracyjna": "Opłata kogeneracyjna (zł/kWh)",
+          "oplata_sieciowa_stala": "Opłata sieciowa stała (zł/mies.)",
+          "oplata_abonamentowa": "Opłata abonamentowa (zł/mies.)",
+          "oplata_mocowa": "Opłata mocowa (zł/mies.)",
+          "oplata_handlowa": "Opłata handlowa (zł/mies.)",
+          "oplata_przejsciowa": "Opłata przejściowa (zł/mies.)",
+          "vat": "VAT (%)"
+        }
+      },
+      "cennik_remove": {
+        "title": "Usuń cennik",
+        "data": {
+          "wersja": "Cennik",
+          "force": "Zmieniam mimo policzonych dni (potem uruchomię prad.inicjuj)"
+        }
+      },
+      "opust": {
+        "title": "Współczynnik opustu",
+        "description": "Współczynniki:\n{lista}",
+        "menu_options": {
+          "opust_add": "Dodaj współczynnik od daty",
+          "opust_edit": "Popraw współczynnik",
+          "opust_remove": "Usuń współczynnik"
+        }
+      },
+      "opust_add": {
+        "title": "Współczynnik opustu od daty",
+        "data": {
+          "od": "Obowiązuje od",
+          "wspolczynnik": "Współczynnik (0–1)"
+        }
+      },
+      "opust_edit": {
+        "title": "Popraw współczynnik",
+        "data": {
+          "pozycja": "Współczynnik"
+        }
+      },
+      "opust_dane": {
+        "title": "Popraw współczynnik",
+        "data": {
+          "od": "Obowiązuje od",
+          "wspolczynnik": "Współczynnik (0–1)"
+        }
+      },
+      "opust_remove": {
+        "title": "Usuń współczynnik",
+        "data": {
+          "pozycja": "Współczynnik"
+        }
+      },
+      "cennik_strefy": {
+        "title": "Własne godziny taniej strefy",
+        "description": "Pełne godziny 0–23. Przedział może przechodzić przez północ (22 → 6). Godziny G12 różnią się między operatorami i latami – wpisz je z umowy albo taryfy.",
+        "data": {
+          "tanie1_od": "Tania 1 – od godziny",
+          "tanie1_do": "Tania 1 – do godziny",
+          "tanie2_od": "Tania 2 – od godziny",
+          "tanie2_do": "Tania 2 – do godziny",
+          "tanie3_od": "Tania 3 – od godziny",
+          "tanie3_do": "Tania 3 – do godziny",
+          "weekend": "Sobota i niedziela",
+          "swieta": "Święta"
+        }
       }
     },
     "error": {
@@ -104,7 +204,20 @@
       "not_energy": "Wybierz licznik energii (kWh)",
       "net_state_class": "Licznik netto musi mieć state_class: total (total_increasing traktuje spadek jako reset).",
       "ratio_required": "Podaj współczynnik.",
-      "zones_invalid": "{blad}"
+      "zones_invalid": "{blad}",
+      "empty": "Musi zostać co najmniej jedna pozycja.",
+      "duplicate_date": "Pozycja od tej daty już istnieje.",
+      "zone_change_not_first": "Zmiana taryfy lub stref tylko od pierwszego dnia miesiąca",
+      "counted_days": "Strefy tych dni są już policzone – dodaj nowy cennik od pierwszego dnia następnego miesiąca albo zaznacz »Zmieniam mimo policzonych dni« i potem uruchom prad.inicjuj",
+      "last_version": "Nie można usunąć ostatniej pozycji.",
+      "unknown_version": "Nie ma takiej pozycji.",
+      "name_required": "Podaj nazwę cennika.",
+      "price_invalid": "Sprawdź ceny: nie mogą być ujemne, VAT 0–100.",
+      "ratio_invalid": "Współczynnik opustu musi być między 0 a 1."
+    },
+    "abort": {
+      "not_loaded": "Integracja nie jest załadowana – najpierw napraw jej uruchomienie.",
+      "unknown_version": "Nie ma takiej pozycji."
     }
   },
   "selector": {

@@ -95,6 +95,106 @@
           "pv_entity": "PV production (optional)",
           "temperature_entity": "Outdoor temperature (optional)"
         }
+      },
+      "cenniki": {
+        "title": "Price lists",
+        "description": "Price list versions:\n{lista}\n\nAdd a price that starts on a future date here, not through the number.prad_* fields (those correct the price list valid today).",
+        "menu_options": {
+          "cennik_add": "Add a price list from a date",
+          "cennik_edit": "Edit a price list",
+          "cennik_remove": "Remove a price list"
+        }
+      },
+      "cennik_edit": {
+        "title": "Edit a price list",
+        "data": {
+          "wersja": "Price list"
+        }
+      },
+      "cennik_dane": {
+        "title": "Price list - date and tariff",
+        "description": "The price changes at midnight of the given day. The tariff or zone hours can only change from the first day of a month.",
+        "data": {
+          "od": "Valid from",
+          "nazwa": "Name",
+          "rozklad": "Tariff and zone hours",
+          "force": "Change despite already calculated days (I will run prad.inicjuj afterwards)"
+        }
+      },
+      "cennik_ceny": {
+        "title": "Price list - net prices",
+        "description": "Net prices from the invoice or tariff: per kWh (energy, distribution, fees) and per month (fixed fees).",
+        "data": {
+          "energia_droga": "Energy - peak / all-day zone (PLN/kWh)",
+          "energia_tania": "Energy - off-peak zone (PLN/kWh)",
+          "dystrybucja_droga": "Variable distribution - peak / all-day (PLN/kWh)",
+          "dystrybucja_tania": "Variable distribution - off-peak (PLN/kWh)",
+          "oplata_jakosciowa": "Quality fee (PLN/kWh)",
+          "oplata_oze": "RES fee (PLN/kWh)",
+          "oplata_kogeneracyjna": "Cogeneration fee (PLN/kWh)",
+          "oplata_sieciowa_stala": "Fixed network fee (PLN/month)",
+          "oplata_abonamentowa": "Subscription fee (PLN/month)",
+          "oplata_mocowa": "Capacity fee (PLN/month)",
+          "oplata_handlowa": "Trade fee (PLN/month)",
+          "oplata_przejsciowa": "Transition fee (PLN/month)",
+          "vat": "VAT (%)"
+        }
+      },
+      "cennik_remove": {
+        "title": "Remove a price list",
+        "data": {
+          "wersja": "Price list",
+          "force": "Change despite already calculated days (I will run prad.inicjuj afterwards)"
+        }
+      },
+      "opust": {
+        "title": "Net-metering ratio",
+        "description": "Ratios:\n{lista}",
+        "menu_options": {
+          "opust_add": "Add a ratio from a date",
+          "opust_edit": "Edit a ratio",
+          "opust_remove": "Remove a ratio"
+        }
+      },
+      "opust_add": {
+        "title": "Net-metering ratio from a date",
+        "data": {
+          "od": "Valid from",
+          "wspolczynnik": "Ratio (0-1)"
+        }
+      },
+      "opust_edit": {
+        "title": "Edit a ratio",
+        "data": {
+          "pozycja": "Ratio"
+        }
+      },
+      "opust_dane": {
+        "title": "Edit a ratio",
+        "data": {
+          "od": "Valid from",
+          "wspolczynnik": "Ratio (0-1)"
+        }
+      },
+      "opust_remove": {
+        "title": "Remove a ratio",
+        "data": {
+          "pozycja": "Ratio"
+        }
+      },
+      "cennik_strefy": {
+        "title": "Own off-peak hours",
+        "description": "Full hours 0-23. A range may cross midnight (22 → 6). G12 hours differ between operators and years - enter them from your contract or tariff.",
+        "data": {
+          "tanie1_od": "Off-peak 1 - from hour",
+          "tanie1_do": "Off-peak 1 - to hour",
+          "tanie2_od": "Off-peak 2 - from hour",
+          "tanie2_do": "Off-peak 2 - to hour",
+          "tanie3_od": "Off-peak 3 - from hour",
+          "tanie3_do": "Off-peak 3 - to hour",
+          "weekend": "Saturday and Sunday",
+          "swieta": "Public holidays"
+        }
       }
     },
     "error": {
@@ -104,7 +204,20 @@
       "not_energy": "Select an energy meter (kWh)",
       "net_state_class": "The net meter must have state_class: total (total_increasing treats a decrease as a reset).",
       "ratio_required": "Enter the ratio.",
-      "zones_invalid": "{blad}"
+      "zones_invalid": "{blad}",
+      "empty": "At least one entry must remain.",
+      "duplicate_date": "An entry from this date already exists.",
+      "zone_change_not_first": "The tariff or zones can only change from the first day of a month",
+      "counted_days": "The zones of these days are already calculated - add a new price list from the first day of next month, or tick \"Change despite already calculated days\" and then run prad.inicjuj",
+      "last_version": "The last entry cannot be removed.",
+      "unknown_version": "There is no such entry.",
+      "name_required": "Enter a name for the price list.",
+      "price_invalid": "Check the prices: they cannot be negative, VAT 0-100.",
+      "ratio_invalid": "The net-metering ratio must be between 0 and 1."
+    },
+    "abort": {
+      "not_loaded": "The integration is not loaded - fix its startup first.",
+      "unknown_version": "There is no such entry."
     }
   },
   "selector": {

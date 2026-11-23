@@ -3,11 +3,18 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigEntryState,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
@@ -25,9 +32,14 @@ from .const import (
     DOMAIN,
     GRID_NET,
     GRID_TWO,
+    PRICE_KEYS,
     RESERVED_SLUGS,
 )
+from .logic.tariff import OpustEntry, PriceListError, PriceVersion, price_at, with_opust, with_version
 from .logic.zones import G11, TAURON_G12W, ZoneSchedule, make_schedule
+
+if TYPE_CHECKING:
+    from .coordinator import PradCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -258,6 +270,13 @@ class PradOptionsFlow(OptionsFlow):
     def __init__(self) -> None:
         self._consumers: list[dict[str, str]] | None = None
         self._removed: list[str] = []
+        self._edit_od: date | None = None
+        self._edit_opust_od: date | None = None
+        self._od: date = date.min
+        self._nazwa = ""
+        self._rozklad = "tauron_g12w"
+        self._force = False
+        self._schedule: ZoneSchedule | None = None
 
     def _items(self) -> list[dict[str, str]]:
         if self._consumers is None:
@@ -265,14 +284,14 @@ class PradOptionsFlow(OptionsFlow):
         return self._consumers
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        options = ["instalacja", "add_consumer"]
+        options = ["cenniki", "instalacja", "add_consumer"]
         if self._items():
             options.append("remove_consumer")
         options.append("finish")
         return self.async_show_menu(step_id="init", menu_options=options)
 
     async def async_step_instalacja(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        return self.async_show_menu(step_id="instalacja", menu_options=["liczniki"])
+        return self.async_show_menu(step_id="instalacja", menu_options=["opust", "liczniki"])
 
     async def async_step_liczniki(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
@@ -329,6 +348,339 @@ class PradOptionsFlow(OptionsFlow):
             }
         )
         return self.async_show_form(step_id="remove_consumer", data_schema=schema)
+
+    # ------------------------------------------------------------ price lists
+
+    def _loaded(self) -> PradCoordinator | None:
+        if self.config_entry.state is not ConfigEntryState.LOADED:
+            return None
+        return self.config_entry.runtime_data
+
+    @staticmethod
+    def _version_label(v: PriceVersion) -> str:
+        return f"{v.od.isoformat()} – {v.nazwa} – {v.taryfa}"
+
+    @staticmethod
+    def _opust_label(e: OpustEntry) -> str:
+        return f"{e.od.isoformat()} – {e.wspolczynnik}"
+
+    def _price_choices(self, coordinator: PradCoordinator) -> list[selector.SelectOptionDict]:
+        return [
+            selector.SelectOptionDict(value=v.od.isoformat(), label=self._version_label(v))
+            for v in coordinator.prices
+        ]
+
+    def _opust_choices(self, coordinator: PradCoordinator) -> list[selector.SelectOptionDict]:
+        return [
+            selector.SelectOptionDict(value=e.od.isoformat(), label=self._opust_label(e))
+            for e in coordinator.opust
+        ]
+
+    async def async_step_cenniki(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        coordinator = self._loaded()
+        if coordinator is None:
+            return self.async_abort(reason="not_loaded")
+        options = ["cennik_add", "cennik_edit"]
+        if len(coordinator.prices) > 1:
+            options.append("cennik_remove")
+        lista = "\n".join(f"- {self._version_label(v)}" for v in coordinator.prices)
+        return self.async_show_menu(
+            step_id="cenniki", menu_options=options, description_placeholders={"lista": lista}
+        )
+
+    async def async_step_cennik_add(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if self._loaded() is None:
+            return self.async_abort(reason="not_loaded")
+        self._edit_od = None
+        return await self.async_step_cennik_dane()
+
+    async def async_step_cennik_edit(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        coordinator = self._loaded()
+        if coordinator is None:
+            return self.async_abort(reason="not_loaded")
+        if user_input is not None:
+            self._edit_od = date.fromisoformat(user_input["wersja"])
+            return await self.async_step_cennik_dane()
+        schema = vol.Schema(
+            {
+                vol.Required("wersja"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=self._price_choices(coordinator), mode=selector.SelectSelectorMode.DROPDOWN
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="cennik_edit", data_schema=schema)
+
+    @staticmethod
+    def _rozklad_of(version: PriceVersion) -> str:
+        if version.strefy.id in ("tauron_g12w", "g11"):
+            return version.strefy.id
+        return "wlasne_g12w" if version.taryfa == "G12w" else "wlasne_g12"
+
+    def _edited_version(self, coordinator: PradCoordinator) -> PriceVersion | None:
+        if self._edit_od is None:
+            return None
+        return next((v for v in coordinator.prices if v.od == self._edit_od), None)
+
+    async def async_step_cennik_dane(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        coordinator = self._loaded()
+        if coordinator is None:
+            return self.async_abort(reason="not_loaded")
+        edited = self._edited_version(coordinator)
+        base = edited or price_at(coordinator.prices, coordinator.today())
+        errors: dict[str, str] = {}
+        defaults: dict[str, Any] = {
+            "od": (edited.od if edited else coordinator.today()).isoformat(),
+            "nazwa": edited.nazwa if edited else "",
+            "rozklad": self._rozklad_of(base),
+            "force": False,
+        }
+        if user_input is not None:
+            od = date.fromisoformat(user_input["od"])
+            nazwa = str(user_input["nazwa"]).strip()
+            if any(v.od == od and v.od != self._edit_od for v in coordinator.prices):
+                errors["od"] = "duplicate_date"
+            if not nazwa:
+                errors["nazwa"] = "name_required"
+            if not errors:
+                self._od = od
+                self._nazwa = nazwa
+                self._rozklad = user_input["rozklad"]
+                self._force = bool(user_input.get("force", False))
+                self._schedule = None
+                if self._rozklad.startswith("wlasne"):
+                    return await self.async_step_cennik_strefy()
+                self._schedule = schedule_from_form(self._rozklad, None)
+                return await self.async_step_cennik_ceny()
+            defaults = {**defaults, **user_input}
+        schema = vol.Schema(
+            {
+                vol.Required("od", default=defaults["od"]): selector.DateSelector(),
+                vol.Required("nazwa", default=defaults["nazwa"]): selector.TextSelector(),
+                vol.Required("rozklad", default=defaults["rozklad"]): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=list(ROZKLADY), translation_key="rozklad", mode=selector.SelectSelectorMode.DROPDOWN
+                    )
+                ),
+                vol.Required("force", default=bool(defaults["force"])): selector.BooleanSelector(),
+            }
+        )
+        return self.async_show_form(step_id="cennik_dane", data_schema=schema, errors=errors)
+
+    def _price_base(self, coordinator: PradCoordinator) -> PriceVersion:
+        return self._edited_version(coordinator) or price_at(coordinator.prices, self._od)
+
+    async def async_step_cennik_strefy(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        coordinator = self._loaded()
+        if coordinator is None:
+            return self.async_abort(reason="not_loaded")
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+        defaults: dict[str, Any] = {"weekend": "tania" if self._rozklad == "wlasne_g12w" else "robocze"}
+        strefy = self._price_base(coordinator).strefy
+        if strefy.id == "wlasne":
+            for i, (start, end) in enumerate(strefy.tanie_robocze[:3], start=1):
+                defaults[f"tanie{i}_od"] = start
+                defaults[f"tanie{i}_do"] = end
+            defaults["weekend"] = strefy.weekend
+            defaults["swieta"] = strefy.swieta
+        if user_input is not None:
+            try:
+                self._schedule = schedule_from_form(self._rozklad, user_input)
+            except ValueError as err:
+                errors["base"] = "zones_invalid"
+                placeholders["blad"] = str(err)
+                defaults = dict(user_input)
+            else:
+                return await self.async_step_cennik_ceny()
+        return self.async_show_form(
+            step_id="cennik_strefy", data_schema=zones_schema(defaults), errors=errors,
+            description_placeholders=placeholders,
+        )
+
+    async def async_step_cennik_ceny(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        coordinator = self._loaded()
+        if coordinator is None:
+            return self.async_abort(reason="not_loaded")
+        schedule = self._schedule
+        if schedule is None:
+            return await self.async_step_cennik_dane()
+        base = self._price_base(coordinator)
+        keys = [
+            k for k in PRICE_KEYS
+            if schedule.taryfa != "G11" or k not in ("energia_tania", "dystrybucja_tania")
+        ]
+        errors: dict[str, str] = {}
+        defaults: dict[str, Any] = {k: float(getattr(base, PRICE_KEYS[k])) for k in keys}
+        if user_input is not None:
+            try:
+                new = PriceVersion(
+                    self._od, self._nazwa, schedule.taryfa, schedule,
+                    **{
+                        field: Decimal(str(user_input[key])) if key in keys else Decimal("0")
+                        for key, field in PRICE_KEYS.items()
+                    },
+                )
+                versions = with_version(coordinator.prices, self._edit_od, new)
+                await coordinator.async_apply_prices(versions, force=self._force)
+            except PriceListError as err:
+                errors["base"] = err.code
+            except (ValueError, ArithmeticError):
+                errors["base"] = "price_invalid"
+            else:
+                return self._finish()
+            defaults = {**defaults, **{k: v for k, v in user_input.items() if k in keys}}
+        fields: dict[Any, Any] = {}
+        for key in keys:
+            limits: dict[str, Any] = {"max": 100} if key == "vat" else {}
+            fields[vol.Required(key, default=defaults[key])] = selector.NumberSelector(
+                selector.NumberSelectorConfig(min=0, step="any", mode=selector.NumberSelectorMode.BOX, **limits)
+            )
+        return self.async_show_form(step_id="cennik_ceny", data_schema=vol.Schema(fields), errors=errors)
+
+    async def async_step_cennik_remove(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        coordinator = self._loaded()
+        if coordinator is None:
+            return self.async_abort(reason="not_loaded")
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                od = date.fromisoformat(user_input["wersja"])
+                versions = with_version(coordinator.prices, od, None)
+                await coordinator.async_apply_prices(versions, force=bool(user_input.get("force", False)))
+            except PriceListError as err:
+                errors["base"] = err.code
+            else:
+                return self._finish()
+        schema = vol.Schema(
+            {
+                vol.Required("wersja"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=self._price_choices(coordinator), mode=selector.SelectSelectorMode.DROPDOWN
+                    )
+                ),
+                vol.Required("force", default=False): selector.BooleanSelector(),
+            }
+        )
+        return self.async_show_form(step_id="cennik_remove", data_schema=schema, errors=errors)
+
+    # ------------------------------------------------------- credit ratio
+
+    async def async_step_opust(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        coordinator = self._loaded()
+        if coordinator is None:
+            return self.async_abort(reason="not_loaded")
+        options = ["opust_add", "opust_edit"]
+        if len(coordinator.opust) > 1:
+            options.append("opust_remove")
+        lista = "\n".join(f"- {self._opust_label(e)}" for e in coordinator.opust)
+        return self.async_show_menu(
+            step_id="opust", menu_options=options, description_placeholders={"lista": lista}
+        )
+
+    @staticmethod
+    def _opust_form(od: str, ratio: float | None) -> vol.Schema:
+        ratio_marker = vol.Required("wspolczynnik") if ratio is None else vol.Required("wspolczynnik", default=ratio)
+        return vol.Schema(
+            {
+                vol.Required("od", default=od): selector.DateSelector(),
+                ratio_marker: selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=0, max=1, step=0.01, mode=selector.NumberSelectorMode.BOX)
+                ),
+            }
+        )
+
+    def _opust_pick_schema(self, coordinator: PradCoordinator) -> vol.Schema:
+        return vol.Schema(
+            {
+                vol.Required("pozycja"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=self._opust_choices(coordinator), mode=selector.SelectSelectorMode.DROPDOWN
+                    )
+                )
+            }
+        )
+
+    @staticmethod
+    async def _save_opust(
+        coordinator: PradCoordinator, old_od: date | None, new: OpustEntry | None
+    ) -> str | None:
+        """Apply the change; return the error code, or None on success."""
+        try:
+            await coordinator.async_apply_opust(with_opust(coordinator.opust, old_od, new))
+        except PriceListError as err:
+            return err.code
+        return None
+
+    async def _opust_submit(
+        self, coordinator: PradCoordinator, old_od: date | None, user_input: dict[str, Any]
+    ) -> tuple[bool, str | None]:
+        """Return (saved, error code)."""
+        try:
+            entry = OpustEntry(date.fromisoformat(user_input["od"]), Decimal(str(user_input["wspolczynnik"])))
+        except (ValueError, ArithmeticError):
+            return False, "ratio_invalid"
+        code = await self._save_opust(coordinator, old_od, entry)
+        return code is None, code
+
+    async def async_step_opust_add(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        coordinator = self._loaded()
+        if coordinator is None:
+            return self.async_abort(reason="not_loaded")
+        errors: dict[str, str] = {}
+        od_default, ratio_default = coordinator.today().isoformat(), None
+        if user_input is not None:
+            od_default, ratio_default = user_input["od"], user_input["wspolczynnik"]
+            saved, code = await self._opust_submit(coordinator, None, user_input)
+            if saved:
+                return self._finish()
+            errors["base"] = code or "ratio_invalid"
+        return self.async_show_form(
+            step_id="opust_add", data_schema=self._opust_form(od_default, ratio_default), errors=errors
+        )
+
+    async def async_step_opust_edit(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        coordinator = self._loaded()
+        if coordinator is None:
+            return self.async_abort(reason="not_loaded")
+        if user_input is not None:
+            self._edit_opust_od = date.fromisoformat(user_input["pozycja"])
+            return await self.async_step_opust_dane()
+        return self.async_show_form(step_id="opust_edit", data_schema=self._opust_pick_schema(coordinator))
+
+    async def async_step_opust_dane(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        coordinator = self._loaded()
+        if coordinator is None:
+            return self.async_abort(reason="not_loaded")
+        current = next((e for e in coordinator.opust if e.od == self._edit_opust_od), None)
+        if current is None:
+            return self.async_abort(reason="unknown_version")
+        errors: dict[str, str] = {}
+        od_default, ratio_default = current.od.isoformat(), float(current.wspolczynnik)
+        if user_input is not None:
+            od_default, ratio_default = user_input["od"], user_input["wspolczynnik"]
+            saved, code = await self._opust_submit(coordinator, current.od, user_input)
+            if saved:
+                return self._finish()
+            errors["base"] = code or "ratio_invalid"
+        return self.async_show_form(
+            step_id="opust_dane", data_schema=self._opust_form(od_default, ratio_default), errors=errors
+        )
+
+    async def async_step_opust_remove(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        coordinator = self._loaded()
+        if coordinator is None:
+            return self.async_abort(reason="not_loaded")
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            code = await self._save_opust(coordinator, date.fromisoformat(user_input["pozycja"]), None)
+            if code is None:
+                return self._finish()
+            errors["base"] = code
+        return self.async_show_form(
+            step_id="opust_remove", data_schema=self._opust_pick_schema(coordinator), errors=errors
+        )
 
     async def async_step_finish(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         return self._finish()
