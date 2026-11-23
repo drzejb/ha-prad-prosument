@@ -64,7 +64,7 @@ Zmiana taryfy albo godzin stref jest możliwa tylko od pierwszego dnia miesiąca
 
 ## Zmiana licznika a `prad.inicjuj`
 
-Licznik wymienisz w Konfiguruj → Instalacja → **Liczniki**. Historia, magazyn i faktury zostają; godzina zmiany nie jest liczona. `prad.inicjuj` z datą wcześniejszą niż zmiana licznika jest odrzucane. Dodanie albo usunięcie PV liczy się jak zmiana licznika (też blokuje `prad.inicjuj` z wcześniejszą datą).
+Licznik wymienisz w Konfiguruj → Instalacja → **Liczniki**. Historia, magazyn i faktury zostają; godzina zmiany nie jest liczona. `prad.inicjuj` z datą wcześniejszą niż zmiana licznika jest odrzucane. Dodanie albo usunięcie PV liczy się jak zmiana licznika (też blokuje `prad.inicjuj` z wcześniejszą datą). Po zmianie licznika w trakcie miesiąca nie uruchamiaj `prad.inicjuj` do końca tego miesiąca – przeliczenie od dnia zmiany pominęłoby zużycie z wcześniejszych dni tego miesiąca.
 
 ## Jak to liczy
 
@@ -120,6 +120,7 @@ Gotowy pulpit jest w [`dashboards/prad.yaml`](dashboards/prad.yaml): dwie zakła
 ## Ważne zasady
 
 - **Zamknięty miesiąc zachowuje swoje cenniki, współczynnik opustu i strefy** oraz ustawienie przełącznika magazynu, także po ponownym `prad.inicjuj`. Świadomie przeliczyć go po nowych cenach się nie da.
+- **`od` w `prad.inicjuj` ustawiaj na pierwszy dzień miesiąca.** Przeliczenie od innego dnia pomija dni tego miesiąca sprzed `od`.
 - **Ponowne `prad.inicjuj` wywołuj zawsze z tym samym `od`.** Stan magazynu sprzed `od` jest zapamiętywany przy pierwszym przeliczeniu; jest dokładny, jeśli przed `od` nie było wpływów do magazynu.
 - **Pliki CSV są tylko dopisywane** (`<config>/prad/`). Po ponownym `prad.inicjuj` stare wiersze zostają, nowe są dopisywane bez duplikatów miesięcy.
 - Produkcja PV z godzin nocnych na przełomie miesiąca (≈ 0 kWh) dla już zamkniętego miesiąca jest pomijana.
