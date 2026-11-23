@@ -354,6 +354,20 @@ class PradCoordinator(DataUpdateCoordinator[None]):
             await self._apply_opust_locked(entries)
         self.async_update_listeners()
 
+    async def async_edit_prices(
+        self, old_od: date | None, new: PriceVersion | None, *, force: bool = False
+    ) -> None:
+        """Add (old_od None), replace or delete (new None) a version; read-modify-write under the lock."""
+        async with self.lock:
+            touched = await self._apply_prices_locked(with_version(self.prices, old_od, new), force)
+        self._after_prices(touched, force)
+
+    async def async_edit_opust(self, old_od: date | None, new: OpustEntry | None) -> None:
+        """Add, replace or delete a ratio entry; read-modify-write under the lock."""
+        async with self.lock:
+            await self._apply_opust_locked(with_opust(self.opust, old_od, new))
+        self.async_update_listeners()
+
     async def async_set_setting(self, key: str, value: Any) -> None:
         if key in PRICE_KEYS or key == KEY_PRICE_NAME:
             if key == KEY_PRICE_NAME:
