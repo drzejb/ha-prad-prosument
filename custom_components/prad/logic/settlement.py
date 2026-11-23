@@ -4,9 +4,11 @@ Pure Python, no Home Assistant imports.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal
 
+from .amounts import split_largest_remainder, split_proportional
 from .zones import Zone, add_months
 
 _ZONES = (Zone.PEAK, Zone.OFFPEAK)
@@ -35,8 +37,30 @@ class Settlement:
     storage_after: Decimal
 
 
-def _round(value: Decimal) -> Decimal:
+def round_kwh(value: Decimal) -> Decimal:
     return value.quantize(Decimal("1"), ROUND_HALF_UP)
+
+
+def credit_final(
+    export: dict[Zone, Decimal], segments: Sequence[tuple[Decimal, dict[Zone, Decimal]]]
+) -> dict[Zone, Decimal]:
+    """Credit of a closed month; ``export`` must already be rounded to whole kWh."""
+    result: dict[Zone, Decimal] = {}
+    for z in _ZONES:
+        parts = split_largest_remainder(int(export[z]), [weights[z] for _, weights in segments])
+        result[z] = round_kwh(sum((Decimal(p) * ratio for p, (ratio, _) in zip(parts, segments)), _ZERO))
+    return result
+
+
+def credit_running(
+    export: dict[Zone, Decimal], segments: Sequence[tuple[Decimal, dict[Zone, Decimal]]]
+) -> dict[Zone, Decimal]:
+    """Credit of a running month (no rounding)."""
+    result: dict[Zone, Decimal] = {}
+    for z in _ZONES:
+        parts = split_proportional(export[z], [weights[z] for _, weights in segments])
+        result[z] = sum((p * ratio for p, (ratio, _) in zip(parts, segments)), _ZERO)
+    return result
 
 
 def settle(
@@ -47,6 +71,8 @@ def settle(
     credit_ratio: Decimal,
     storage_before_cross: bool,
     final: bool,
+    *,
+    credit: dict[Zone, Decimal] | None = None,
 ) -> Settlement:
     """Settle one month.
 
@@ -59,15 +85,16 @@ def settle(
     ``storage_after`` until the next final close.
     """
     if final:
-        consumption = {z: _round(consumption[z]) for z in _ZONES}
-        export = {z: _round(export[z]) for z in _ZONES}
+        consumption = {z: round_kwh(consumption[z]) for z in _ZONES}
+        export = {z: round_kwh(export[z]) for z in _ZONES}
     else:
         consumption = {z: consumption[z] for z in _ZONES}
         export = {z: export[z] for z in _ZONES}
 
-    credit = {z: export[z] * credit_ratio for z in _ZONES}
-    if final:
-        credit = {z: _round(credit[z]) for z in _ZONES}
+    if credit is None:
+        credit = {z: export[z] * credit_ratio for z in _ZONES}
+        if final:
+            credit = {z: round_kwh(credit[z]) for z in _ZONES}
 
     own = {z: min(consumption[z], credit[z]) for z in _ZONES}
     missing = {z: consumption[z] - own[z] for z in _ZONES}

@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from custom_components.prad.logic.settlement import Inflow, settle
+from custom_components.prad.logic.settlement import Inflow, credit_final, credit_running, settle
 from custom_components.prad.logic.zones import Zone
 
 P, O = Zone.PEAK, Zone.OFFPEAK
@@ -79,3 +79,24 @@ def test_mixed_inflows_stale_same_month_and_fifo_order():
     assert s.inflows_after == (Inflow("2026-11", P, D("8"), "2027-11"), Inflow("2027-01", O, D("3"), "2028-01"))
     assert s.storage_after == D("11")
     assert inflows == before
+
+
+def test_credit_final_one_segment_equals_ratio():
+    assert credit_final({P: D("279"), O: D("312")}, [(D("0.8"), {P: D("279"), O: D("312")})]) == {P: D("223"), O: D("250")}
+
+
+def test_credit_final_two_ratio_segments():
+    segs = [(D("0.8"), {P: D("28"), O: D("14")}), (D("0.7"), {P: D("24.8"), O: D("8")})]
+    assert credit_final({P: D("53"), O: D("22")}, segs) == {P: D("40"), O: D("17")}
+
+
+def test_credit_running_is_proportional_and_exact_for_one_segment():
+    assert credit_running({P: D("50"), O: D("0")}, [(D("0.8"), {P: D("7"), O: D("0")})]) == {P: D("40.0"), O: D("0.0")}
+    segs = [(D("0.8"), {P: D("28"), O: D("0")}), (D("0.7"), {P: D("12"), O: D("0")})]
+    assert credit_running({P: D("40"), O: D("0")}, segs)[P] == D("30.8")
+
+
+def test_settle_with_given_credit():
+    s = settle("2026-11", {P: D("241"), O: D("150")}, {P: D("53"), O: D("22")}, (), D("0"), False, True,
+               credit={P: D("40"), O: D("17")})
+    assert s.credit == {P: D("40"), O: D("17")} and s.billable == {P: D("201"), O: D("133")}
