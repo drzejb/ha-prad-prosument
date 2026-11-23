@@ -20,6 +20,7 @@ from .entity import PradEntity
 from .logic import climate
 from .logic.amounts import Totals, price_now_gross
 from .logic.state import Counters
+from .logic.tariff import next_change
 from .logic.zones import TZ, day_key, month_key, month_start, zone_at
 
 KWH = "kWh"
@@ -76,19 +77,19 @@ def _midnight(key: str) -> datetime:
 class CounterSpec:
     key: str
     name: str
-    value: Callable[[Counters], float]
+    value: Callable[[Counters], float | None]
     missing: str | None = None  # tracker key reported as `godziny_bez_danych`
 
 
-def _house(c: Counters) -> float:
+def _house(c: Counters) -> float | None:
     return c.house()
 
 
-def _self(c: Counters) -> float:
+def _self(c: Counters) -> float | None:
     return c.self_consumption()
 
 
-def _rest(c: Counters) -> float:
+def _rest(c: Counters) -> float | None:
     return c.rest()
 
 
@@ -103,7 +104,7 @@ def _zone_specs(prefix: str, period: str) -> list[CounterSpec]:
 
 MONTH_SPECS: list[CounterSpec] = [
     *_zone_specs("mc", "w tym miesiącu"),
-    CounterSpec("mc_produkcja_pv", "produkcja PV w tym miesiącu", lambda c: c.pv),
+    CounterSpec("mc_produkcja_pv", "produkcja PV w tym miesiącu", lambda c: c.pv_value()),
     CounterSpec("mc_zuzycie_domu", "zużycie domu w tym miesiącu", _house),
     CounterSpec("mc_autokonsumpcja", "autokonsumpcja w tym miesiącu", _self),
     CounterSpec("mc_reszta", "reszta zużycia w tym miesiącu", _rest),
@@ -111,7 +112,7 @@ MONTH_SPECS: list[CounterSpec] = [
 
 DAY_SPECS: list[CounterSpec] = [
     *_zone_specs("dzis", "dziś"),
-    CounterSpec("dzis_produkcja_pv", "produkcja PV dziś", lambda c: c.pv),
+    CounterSpec("dzis_produkcja_pv", "produkcja PV dziś", lambda c: c.pv_value()),
     CounterSpec("dzis_zuzycie_domu", "zużycie domu dziś", _house),
     CounterSpec("dzis_autokonsumpcja", "autokonsumpcja dziś", _self),
 ]
@@ -119,7 +120,7 @@ DAY_SPECS: list[CounterSpec] = [
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
     coordinator: PradCoordinator = entry.runtime_data
-    entities: list[SensorEntity] = [PradPrice(coordinator)]
+    entities: list[SensorEntity] = [PradPrice(coordinator), PradPriceList(coordinator)]
     entities += [PradCounterSensor(coordinator, spec, "month") for spec in MONTH_SPECS]
     entities += [PradCounterSensor(coordinator, spec, "day") for spec in DAY_SPECS]
     for slug, name in coordinator.consumers.items():
@@ -169,7 +170,43 @@ class PradPrice(PradEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         now = dt_util.now()
-        return {"strefa": zone_at(now, self.coordinator.pricing().schedule_at(now)).value}
+        c = self.coordinator
+        pricing = c.pricing()
+        taryfa = pricing.price_at(c.today()).taryfa
+        zone = "całodobowa" if taryfa == "G11" else zone_at(now, pricing.schedule_at(now)).value
+        return {"strefa": zone, "taryfa": taryfa}
+
+
+class PradPriceList(PradEntity, SensorEntity):
+    """Name of the price list in force today; attributes describe versions and coming changes."""
+
+    _unrecorded_attributes = frozenset({"wersje"})
+    _attr_name = f"{NAME_PREFIX}cennik"
+
+    def __init__(self, coordinator: PradCoordinator) -> None:
+        super().__init__(coordinator, "sensor", "cennik")
+
+    @property
+    def native_value(self) -> str:
+        c = self.coordinator
+        return c.pricing().price_at(c.today()).nazwa
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        c = self.coordinator
+        today = c.today()
+        pricing = c.pricing()
+        version = pricing.price_at(today)
+        change = next_change(c.prices, today)
+        opust_change = next_change(c.opust, today)
+        return {
+            "od": version.od.isoformat(),
+            "taryfa": version.taryfa,
+            "nastepna_zmiana_cen": None if change is None else change.isoformat(),
+            "nastepna_zmiana_opustu": None if opust_change is None else opust_change.isoformat(),
+            "wspolczynnik_opustu": float(pricing.ratio_at(today)),
+            "wersje": [{"od": v.od.isoformat(), "nazwa": v.nazwa, "taryfa": v.taryfa} for v in c.prices],
+        }
 
 
 class PradCounterSensor(PradEntity, SensorEntity):
@@ -193,8 +230,9 @@ class PradCounterSensor(PradEntity, SensorEntity):
         return _day_view(self.coordinator, now)
 
     @property
-    def native_value(self) -> float:
-        return _round(self._spec.value(self._view()[0]))
+    def native_value(self) -> float | None:
+        value = self._spec.value(self._view()[0])
+        return None if value is None else _round(value)
 
     @property
     def last_reset(self) -> datetime:
@@ -352,7 +390,7 @@ class PradKwhPerDegreeDay(PradEntity, SensorEntity):
     @property
     def native_value(self) -> float | None:
         row = self._row()
-        if row is None or row.stopniodni is None:
+        if row is None or row.stopniodni is None or row.zuzycie_domu is None:
             return None
         ratio = climate.kwh_per_degree_day(row.zuzycie_domu, row.stopniodni)
         return None if ratio is None else round(ratio, 3)
@@ -436,6 +474,7 @@ class PradDays(PradEntity, SensorEntity):
         days = []
         for key in keys:
             c = state.days[key]
+            self_consumption = c.self_consumption()
             days.append(
                 {
                     "dzien": key,
@@ -443,8 +482,8 @@ class PradDays(PradEntity, SensorEntity):
                     "pobor_tania": _round(c.import_offpeak),
                     "oddanie_droga": _round(c.export_peak),
                     "oddanie_tania": _round(c.export_offpeak),
-                    "pv": _round(c.pv),
-                    "autokonsumpcja": _round(c.self_consumption()),
+                    "pv": None if c.pv_brak else _round(c.pv),
+                    "autokonsumpcja": None if self_consumption is None else _round(self_consumption),
                     "temp": state.weather.get(key, {}).get("temp"),
                 }
             )

@@ -276,7 +276,7 @@ async def test_inicjuj_returns_summary_and_warns_about_gaps(hass, freezer, tmp_p
     assert result["przerwy"] == 5
     assert result["zamkniete_miesiace"] == []
     assert any("5" in w for w in result["ostrzezenia"])
-    assert "without a Fox meter reading" in caplog.text
+    assert "without a grid meter reading" in caplog.text
 
 
 async def test_inicjuj_without_any_fox_reading_raises(hass, freezer, tmp_path, aioclient_mock):

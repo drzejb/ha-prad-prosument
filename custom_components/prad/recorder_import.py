@@ -206,6 +206,6 @@ async def async_rebuild(
     coordinator.async_update_listeners()
     if gaps:
         warnings.append(f"Brak odczytów licznika w {gaps} godzinach")
-        _LOGGER.warning("Rebuild had %d hours without a Fox meter reading", gaps)
+        _LOGGER.warning("Rebuild had %d hours without a grid meter reading", gaps)
     _LOGGER.info("Rebuild finished: %d hours, %d gaps, closed months: %s", hours, gaps, closed or "none")
     return {"godziny": hours, "przerwy": gaps, "zamkniete_miesiace": closed, "ostrzezenia": warnings}

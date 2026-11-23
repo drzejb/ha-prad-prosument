@@ -34,6 +34,7 @@ async def test_setup_creates_entities(hass, freezer):
     assert hass.states.get("binary_sensor.prad_strefa_droga") is not None
     assert hass.states.get("sensor.prad_cena_teraz") is not None
     assert hass.states.get("sensor.prad_dni") is not None
+    assert hass.states.get("sensor.prad_cennik") is not None
     assert hass.states.get("select.prad_porownanie_a") is not None
     assert hass.states.get("switch.prad_magazyn_przed_przeniesieniem").state == "off"
     assert hass.states.get("text.prad_wersja_cennika").state == "Tauron G12w 2026 (przykład – sprawdź z fakturą)"
@@ -290,3 +291,78 @@ async def test_invoice_form_rejects_nan(hass, freezer, tmp_path):
     with pytest.raises(ServiceValidationError):
         await entity.async_set_native_value(float("nan"))
     assert coordinator.invoice_amount is None
+
+
+async def test_price_list_sensor_and_future_version_in_forecast(hass, freezer):
+    from dataclasses import replace
+    from datetime import date
+    from decimal import Decimal
+    from custom_components.prad.logic.state import Counters
+    from custom_components.prad.logic.tariff import OpustEntry
+
+    freezer.move_to("2026-11-10 00:30:00+01:00")
+    entry = await _setup_entry(hass)
+    c = entry.runtime_data
+    state = c.engine.state
+    for d in range(1, 10):
+        state.days[f"2026-11-{d:02d}"] = Counters(import_peak=10.0)
+    state.months["2026-11"] = Counters(import_peak=90.0)
+    c.async_update_listeners()
+    await hass.async_block_till_done()
+    before = float(hass.states.get("sensor.prad_mc_prognoza").state)
+    future = replace(c.prices[0], od=date(2026, 11, 15), nazwa="Od 15.11", energy_peak=Decimal("0.70"))
+    await c.async_apply_prices([*c.prices, future])
+    await c.async_apply_opust([*c.opust, OpustEntry(date(2027, 1, 1), Decimal("0.7"))])
+    await hass.async_block_till_done()
+    assert float(hass.states.get("sensor.prad_mc_prognoza").state) > before       # zapowiedziana cena jest w prognozie
+    s = hass.states.get("sensor.prad_cennik")
+    assert s.state == "Tauron G12w 2026 (przykład – sprawdź z fakturą)"
+    assert s.attributes["od"] == "2026-11-01" and s.attributes["taryfa"] == "G12w"
+    assert s.attributes["nastepna_zmiana_cen"] == "2026-11-15" and s.attributes["nastepna_zmiana_opustu"] == "2027-01-01"
+    assert [w["nazwa"] for w in s.attributes["wersje"]] == [s.state, "Od 15.11"]
+    freezer.move_to("2026-11-15 00:00:30+01:00")
+    c.async_update_listeners()
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.prad_cennik").state == "Od 15.11"
+    assert hass.states.get("sensor.prad_cennik").attributes["nastepna_zmiana_cen"] is None
+    assert float(hass.states.get("number.prad_energia_droga").state) == pytest.approx(0.70)
+
+async def test_g11_offpeak_numbers_unavailable_and_zone_label(hass, freezer):
+    from dataclasses import replace
+    from custom_components.prad.logic.zones import G11
+
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = await _setup_entry(hass)
+    c = entry.runtime_data
+    await c.async_apply_prices([replace(c.prices[0], taryfa="G11", strefy=G11)])
+    await hass.async_block_till_done()
+    assert hass.states.get("number.prad_energia_tania").state == "unavailable"
+    assert hass.states.get("number.prad_dystrybucja_tania").state == "unavailable"
+    assert hass.states.get("number.prad_energia_droga").state != "unavailable"
+    assert hass.states.get("sensor.prad_cena_teraz").attributes["strefa"] == "całodobowa"
+    assert hass.states.get("binary_sensor.prad_strefa_droga").state == "on"
+    assert hass.states.get("binary_sensor.prad_strefa_droga").attributes["nastepna_zmiana"] is None
+
+async def test_without_pv_energy_sensors_are_unknown(hass, freezer):
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = MockConfigEntry(domain=DOMAIN, data={"tryb_sieci": "dwa", "import_entity": "sensor.test_import",
+                                                 "export_entity": "sensor.test_export"},
+                            options={"consumers": [{"name": "Sauna", "entity_id": "sensor.test_sauna"}]}, version=1, minor_version=2)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    hass.states.async_set("sensor.test_import", "100"); hass.states.async_set("sensor.test_export", "50")
+    await _tick_at(hass, freezer, "2026-11-23 10:00:10+01:00")
+    hass.states.async_set("sensor.test_import", "101.5")
+    await _tick_at(hass, freezer, "2026-11-23 11:00:10+01:00")
+    for eid in ("sensor.prad_mc_produkcja_pv", "sensor.prad_mc_zuzycie_domu", "sensor.prad_mc_autokonsumpcja",
+                "sensor.prad_mc_reszta", "sensor.prad_dzis_zuzycie_domu"):
+        assert hass.states.get(eid).state == "unknown", eid
+    assert float(hass.states.get("sensor.prad_mc_pobor_droga").state) == pytest.approx(1.5)
+    day = hass.states.get("sensor.prad_dni").attributes["dni"][-1]
+    assert day["pv"] is None and day["autokonsumpcja"] is None
+
+async def test_fuse_name_has_no_owner_hardware(hass, freezer):
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    await _setup_entry(hass)
+    assert hass.states.get("number.prad_bezpiecznik_siec").name == "Prąd – bezpiecznik odczytu licznika sieci"
