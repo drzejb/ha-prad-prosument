@@ -31,5 +31,9 @@ class PradPeakZone(PradEntity, BinarySensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        change = next_zone_change(dt_util.now(), self.coordinator.pricing().schedule_for)
-        return {"nastepna_zmiana": None if change is None else change.isoformat()}
+        c = self.coordinator
+        change = next_zone_change(dt_util.now(), c.pricing().schedule_for)
+        return {
+            "nastepna_zmiana": None if change is None else change.isoformat(),
+            "taryfa": c.pricing().price_at(c.today()).taryfa,
+        }

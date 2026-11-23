@@ -9,7 +9,7 @@ from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.exceptions import ServiceValidationError
 
 from .const import NAME_PREFIX
-from .logic.tariff import PriceListError
+from .logic.tariff import PriceListError, price_at
 from .coordinator import PradCoordinator
 from .entity import PradEntity
 
@@ -24,6 +24,7 @@ class NumberSpec:
     step: float
 
 
+_OFFPEAK_KEYS = frozenset({"energia_tania", "dystrybucja_tania"})
 _PRICE = (0.0, 5.0, 0.00001)
 _FEE_PER_KWH = (0.0, 1.0, 0.00001)
 _FEE_FIXED = (0.0, 500.0, 0.01)
@@ -43,7 +44,7 @@ NUMBERS: tuple[NumberSpec, ...] = (
     NumberSpec("oplata_przejsciowa", "opłata przejściowa", "zł", *_FEE_FIXED),
     NumberSpec("vat", "VAT", "%", 0.0, 100.0, 1.0),
     NumberSpec("wspolczynnik_opustu", "współczynnik opustu", None, 0.0, 1.0, 0.01),
-    NumberSpec("bezpiecznik_fox", "bezpiecznik odczytu licznika Fox", "kWh", 1.0, 100.0, 1.0),
+    NumberSpec("bezpiecznik_fox", "bezpiecznik odczytu licznika sieci", "kWh", 1.0, 100.0, 1.0),
     NumberSpec("bezpiecznik_pv", "bezpiecznik odczytu produkcji PV", "kWh", 1.0, 100.0, 1.0),
     NumberSpec("bezpiecznik_odbiorniki", "bezpiecznik odczytu odbiorników", "kWh", 1.0, 100.0, 1.0),
     NumberSpec("baza_stopniodni", "baza stopniodni", "°C", 10.0, 25.0, 0.5),
@@ -68,6 +69,14 @@ class PradNumber(PradEntity, NumberEntity):
         self._attr_native_min_value = spec.minimum
         self._attr_native_max_value = spec.maximum
         self._attr_native_step = spec.step
+
+    @property
+    def available(self) -> bool:
+        if self._key in _OFFPEAK_KEYS:
+            c = self.coordinator
+            if price_at(c.prices, c.today()).taryfa == "G11":
+                return False
+        return super().available
 
     @property
     def native_value(self) -> float | None:
