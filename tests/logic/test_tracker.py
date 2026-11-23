@@ -72,3 +72,25 @@ def test_dst_autumn():
 def test_dst_spring():
     r = advance(ref(datetime(2026, 3, 29, 0, tzinfo=W), (0.0, 0.0)), datetime(2026, 3, 29, 4, tzinfo=W), (3.0, 0.0), 30)
     assert len(r.hours) == 3
+
+
+def test_signed_accepts_negative_delta():
+    r = advance(ref(T0, (100.0,)), T0 + HOUR, (97.5,), 30, signed=True, limit_negative=12)
+    assert not r.rejected and r.hours[0].deltas == pytest.approx((-2.5,))
+
+
+def test_signed_gap_split_equally():
+    r = advance(ref(T0, (100.0,)), T0 + 3 * HOUR, (94.0,), 30, signed=True, limit_negative=12)
+    assert len(r.hours) == 3 and all(x.deltas[0] == pytest.approx(-2.0) for x in r.hours)
+
+
+def test_signed_limits_of_both_signs_scale_with_gap():
+    assert advance(ref(T0, (100.0,)), T0 + HOUR, (131.0,), 30, signed=True, limit_negative=12).reason == "over_limit"
+    r = advance(ref(T0, (100.0,)), T0 + HOUR, (87.0,), 30, signed=True, limit_negative=12)
+    assert r.rejected and r.reason == "over_limit" and r.new_ref.values == (87.0,) and r.hours == ()
+    assert not advance(ref(T0, (100.0,)), T0 + 2 * HOUR, (77.0,), 30, signed=True, limit_negative=12).rejected   # -23 >= -24
+    assert not advance(ref(T0, (100.0,)), T0 + HOUR, (88.0,), 30, signed=True, limit_negative=12).rejected       # exactly -12
+
+
+def test_unsigned_still_rejects_negative():
+    assert advance(ref(T0, (100.0,)), T0 + HOUR, (99.0,), 30).reason == "negative"
