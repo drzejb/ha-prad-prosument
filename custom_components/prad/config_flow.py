@@ -35,7 +35,7 @@ from .const import (
     PRICE_KEYS,
     RESERVED_SLUGS,
 )
-from .logic.tariff import OpustEntry, PriceListError, PriceVersion, price_at, with_opust, with_version
+from .logic.tariff import OpustEntry, PriceListError, PriceVersion, price_at
 from .logic.zones import G11, TAURON_G12W, ZoneSchedule, make_schedule
 
 if TYPE_CHECKING:
@@ -269,6 +269,8 @@ class PradOptionsFlow(OptionsFlow):
 
     def __init__(self) -> None:
         self._consumers: list[dict[str, str]] | None = None
+        self._consumers_changed = False
+        self._entered: dict[str, Any] = {}
         self._removed: list[str] = []
         self._edit_od: date | None = None
         self._edit_opust_od: date | None = None
@@ -317,6 +319,7 @@ class PradOptionsFlow(OptionsFlow):
                 errors[CONF_NAME] = "invalid_name"
             else:
                 self._items().append({"name": name, "entity_id": user_input[CONF_ENTITY_ID]})
+                self._consumers_changed = True
                 return await self.async_step_init()
         schema = vol.Schema(
             {
@@ -333,6 +336,7 @@ class PradOptionsFlow(OptionsFlow):
         if user_input is not None:
             slug = user_input[CONF_REMOVE]
             self._consumers = [c for c in items if slugify(c["name"]) != slug]
+            self._consumers_changed = True
             self._removed.append(slug)
             return await self.async_step_init()
         choices = [
@@ -392,6 +396,8 @@ class PradOptionsFlow(OptionsFlow):
         if self._loaded() is None:
             return self.async_abort(reason="not_loaded")
         self._edit_od = None
+        self._entered = {}
+        self._schedule = None
         return await self.async_step_cennik_dane()
 
     async def async_step_cennik_edit(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -400,6 +406,8 @@ class PradOptionsFlow(OptionsFlow):
             return self.async_abort(reason="not_loaded")
         if user_input is not None:
             self._edit_od = date.fromisoformat(user_input["wersja"])
+            self._entered = {}
+            self._schedule = None
             return await self.async_step_cennik_dane()
         schema = vol.Schema(
             {
@@ -448,12 +456,19 @@ class PradOptionsFlow(OptionsFlow):
                 self._nazwa = nazwa
                 self._rozklad = user_input["rozklad"]
                 self._force = bool(user_input.get("force", False))
-                self._schedule = None
                 if self._rozklad.startswith("wlasne"):
                     return await self.async_step_cennik_strefy()
                 self._schedule = schedule_from_form(self._rozklad, None)
                 return await self.async_step_cennik_ceny()
             defaults = {**defaults, **user_input}
+        return self._show_dane(defaults, errors)
+
+    def _dane_values(self) -> dict[str, Any]:
+        return {
+            "od": self._od.isoformat(), "nazwa": self._nazwa, "rozklad": self._rozklad, "force": self._force,
+        }
+
+    def _show_dane(self, defaults: dict[str, Any], errors: dict[str, str]) -> ConfigFlowResult:
         schema = vol.Schema(
             {
                 vol.Required("od", default=defaults["od"]): selector.DateSelector(),
@@ -478,13 +493,19 @@ class PradOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         defaults: dict[str, Any] = {"weekend": "tania" if self._rozklad == "wlasne_g12w" else "robocze"}
-        strefy = self._price_base(coordinator).strefy
+        strefy = self._schedule if self._schedule is not None and self._schedule.id == "wlasne" else None
+        if strefy is None:
+            strefy = self._price_base(coordinator).strefy
+            keep_weekend = False
+        else:
+            keep_weekend = strefy.taryfa == ("G12w" if self._rozklad == "wlasne_g12w" else "G12")
         if strefy.id == "wlasne":
             for i, (start, end) in enumerate(strefy.tanie_robocze[:3], start=1):
                 defaults[f"tanie{i}_od"] = start
                 defaults[f"tanie{i}_do"] = end
-            defaults["weekend"] = strefy.weekend
             defaults["swieta"] = strefy.swieta
+            if keep_weekend:  # the user's own earlier input in this flow
+                defaults["weekend"] = strefy.weekend
         if user_input is not None:
             try:
                 self._schedule = schedule_from_form(self._rozklad, user_input)
@@ -512,7 +533,9 @@ class PradOptionsFlow(OptionsFlow):
             if schedule.taryfa != "G11" or k not in ("energia_tania", "dystrybucja_tania")
         ]
         errors: dict[str, str] = {}
-        defaults: dict[str, Any] = {k: float(getattr(base, PRICE_KEYS[k])) for k in keys}
+        defaults: dict[str, Any] = {
+            k: self._entered.get(k, float(getattr(base, PRICE_KEYS[k]))) for k in keys
+        }
         if user_input is not None:
             try:
                 new = PriceVersion(
@@ -522,9 +545,11 @@ class PradOptionsFlow(OptionsFlow):
                         for key, field in PRICE_KEYS.items()
                     },
                 )
-                versions = with_version(coordinator.prices, self._edit_od, new)
-                await coordinator.async_apply_prices(versions, force=self._force)
+                await coordinator.async_edit_prices(self._edit_od, new, force=self._force)
             except PriceListError as err:
+                self._entered = {k: v for k, v in user_input.items() if k in keys}
+                if err.code == "counted_days":  # the force checkbox lives on cennik_dane
+                    return self._show_dane(self._dane_values(), {"base": err.code})
                 errors["base"] = err.code
             except (ValueError, ArithmeticError):
                 errors["base"] = "price_invalid"
@@ -547,8 +572,7 @@ class PradOptionsFlow(OptionsFlow):
         if user_input is not None:
             try:
                 od = date.fromisoformat(user_input["wersja"])
-                versions = with_version(coordinator.prices, od, None)
-                await coordinator.async_apply_prices(versions, force=bool(user_input.get("force", False)))
+                await coordinator.async_edit_prices(od, None, force=bool(user_input.get("force", False)))
             except PriceListError as err:
                 errors["base"] = err.code
             else:
@@ -608,7 +632,7 @@ class PradOptionsFlow(OptionsFlow):
     ) -> str | None:
         """Apply the change; return the error code, or None on success."""
         try:
-            await coordinator.async_apply_opust(with_opust(coordinator.opust, old_od, new))
+            await coordinator.async_edit_opust(old_od, new)
         except PriceListError as err:
             return err.code
         return None
@@ -694,4 +718,6 @@ class PradOptionsFlow(OptionsFlow):
             entity_id = f"sensor.prad_mc_odb_{slug}"
             if registry.async_get(entity_id) is not None:
                 registry.async_remove(entity_id)
+        if not self._consumers_changed:  # keep options untouched: no update-listener reload
+            return self.async_create_entry(data=dict(self.config_entry.options))
         return self.async_create_entry(data={**self.config_entry.options, CONF_CONSUMERS: self._items()})

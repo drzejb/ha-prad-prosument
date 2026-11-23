@@ -5,7 +5,10 @@ from unittest.mock import patch
 import pytest
 from homeassistant.data_entry_flow import FlowResultType
 
-from test_entities import _setup_entry, _tick_at
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.prad.const import DOMAIN
+from test_entities import SENSORS, _setup_entry, _tick_at
 
 PRICES = {
     "energia_droga": 0.7, "energia_tania": 0.45, "dystrybucja_droga": 0.3298, "dystrybucja_tania": 0.0512,
@@ -90,18 +93,66 @@ async def test_options_zone_change_of_counted_days_needs_force(hass, freezer):
     hass.states.async_set("sensor.test_import", "101")
     await _tick_at(hass, freezer, "2026-11-23 11:00:10+01:00")
     g11 = {k: v for k, v in PRICES.items() if k not in ("energia_tania", "dystrybucja_tania")}
-    for force, expected in ((False, None), (True, 1)):
-        fid, _ = await _open(hass, entry, "cenniki", "cennik_edit")
-        await hass.config_entries.options.async_configure(fid, {"wersja": "2026-11-01"})
-        await hass.config_entries.options.async_configure(fid, {"od": "2026-11-01", "nazwa": "G11", "rozklad": "g11", "force": force})
-        with patch("custom_components.prad.coordinator.persistent_notification.async_create") as notify:
-            res = await hass.config_entries.options.async_configure(fid, g11)
-        if force:
-            assert res["type"] is FlowResultType.CREATE_ENTRY and entry.runtime_data.prices[0].taryfa == "G11"
-            assert notify.call_count == expected and "prad.inicjuj" in notify.call_args.args[1]
-        else:
-            assert res["errors"] == {"base": "counted_days"} and notify.call_count == 0
-            hass.config_entries.options.async_abort(fid)
+    fid, _ = await _open(hass, entry, "cenniki", "cennik_edit")
+    await hass.config_entries.options.async_configure(fid, {"wersja": "2026-11-01"})
+    await hass.config_entries.options.async_configure(fid, {"od": "2026-11-01", "nazwa": "G11", "rozklad": "g11", "force": False})
+    with patch("custom_components.prad.coordinator.persistent_notification.async_create") as notify:
+        res = await hass.config_entries.options.async_configure(fid, {**g11, "energia_droga": 0.61})
+    assert res["step_id"] == "cennik_dane" and res["errors"] == {"base": "counted_days"} and notify.call_count == 0
+    assert entry.runtime_data.prices[0].taryfa == "G12w"
+    res = await hass.config_entries.options.async_configure(fid, {"od": "2026-11-01", "nazwa": "G11", "rozklad": "g11", "force": True})
+    assert res["step_id"] == "cennik_ceny"
+    with patch("custom_components.prad.coordinator.persistent_notification.async_create") as notify:
+        res = await hass.config_entries.options.async_configure(fid, g11)     # prices entered earlier are only pre-filled
+    assert res["type"] is FlowResultType.CREATE_ENTRY and entry.runtime_data.prices[0].taryfa == "G11"
+    assert notify.call_count == 1 and "prad.inicjuj" in notify.call_args.args[1]
+
+
+async def test_options_prices_prefill_after_counted_days(hass, freezer):
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = await _setup_entry(hass)
+    hass.states.async_set("sensor.test_import", "100"); hass.states.async_set("sensor.test_export", "50")
+    await _tick_at(hass, freezer, "2026-11-23 10:00:10+01:00")
+    hass.states.async_set("sensor.test_import", "101")
+    await _tick_at(hass, freezer, "2026-11-23 11:00:10+01:00")
+    fid, _ = await _open(hass, entry, "cenniki", "cennik_edit")
+    await hass.config_entries.options.async_configure(fid, {"wersja": "2026-11-01"})
+    await hass.config_entries.options.async_configure(fid, {"od": "2026-11-01", "nazwa": "G11", "rozklad": "g11", "force": False})
+    g11 = {k: v for k, v in PRICES.items() if k not in ("energia_tania", "dystrybucja_tania")}
+    await hass.config_entries.options.async_configure(fid, {**g11, "energia_droga": 0.61})
+    res = await hass.config_entries.options.async_configure(fid, {"od": "2026-11-01", "nazwa": "G11", "rozklad": "g11", "force": True})
+    key = next(k for k in res["data_schema"].schema if k == "energia_droga")
+    assert key.default() == pytest.approx(0.61)
+
+
+async def test_options_own_zones_weekend_default_follows_layout(hass, freezer):
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = await _setup_entry(hass)
+    fid, _ = await _open(hass, entry, "cenniki", "cennik_add")
+    res = await hass.config_entries.options.async_configure(fid, {"od": "2026-12-01", "nazwa": "Wlasne", "rozklad": "wlasne_g12", "force": False})
+    assert res["step_id"] == "cennik_strefy"
+    key = next(k for k in res["data_schema"].schema if k == "weekend")
+    assert key.default() == "robocze"
+
+
+async def test_options_empty_options_never_reload(hass, freezer):
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = MockConfigEntry(domain=DOMAIN, data=SENSORS, options={}, version=1, minor_version=2)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    c = entry.runtime_data
+    fid, _ = await _open(hass, entry, "cenniki", "cennik_add")
+    await hass.config_entries.options.async_configure(fid, {"od": "2026-12-15", "nazwa": "Nowe", "rozklad": "tauron_g12w", "force": False})
+    res = await hass.config_entries.options.async_configure(fid, PRICES)
+    assert res["type"] is FlowResultType.CREATE_ENTRY
+    fid, _ = await _open(hass, entry, "instalacja", "opust", "opust_add")
+    res = await hass.config_entries.options.async_configure(fid, {"od": "2026-12-15", "wspolczynnik": 0.7})
+    assert res["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert entry.runtime_data is c and entry.options == {}
+    assert len(c.prices) == 2 and len(c.opust) == 2
+
 
 async def test_options_ratio_add_edit_remove(hass, freezer):
     freezer.move_to("2026-11-23 09:30:00+01:00")
