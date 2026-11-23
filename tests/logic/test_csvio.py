@@ -103,3 +103,9 @@ def test_invoice_append(tmp_path):
     assert lines[0] == ";".join(INVOICES_HEADER)
     assert lines[1] == "2026-09;55.81;2026-11-22T10:00:00+01:00"
     assert len(lines) == 3
+
+
+def test_none_energy_fields_are_empty():
+    cells = dict(zip(MONTHS_HEADER, month_row(
+        _row(zuzycie_domu=None, produkcja_pv=None, autokonsumpcja=None, reszta=None))))
+    assert [cells[k] for k in ("zuzycie_domu", "produkcja_pv", "autokonsumpcja", "reszta")] == ["", "", "", ""]

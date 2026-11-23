@@ -1,16 +1,20 @@
 import json
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
 
 from custom_components.prad.logic.settlement import Inflow
-from custom_components.prad.logic.state import Counters, HistoryRow, PendingClose, State, to_decimal
-from custom_components.prad.logic.tariff import DEFAULT_TARIFF
+from custom_components.prad.logic.segments import freeze_segments
+from custom_components.prad.logic.state import (
+    Counters, HistoryRow, PendingClose, PriceSegment, RatioSegment, State, to_decimal,
+)
+from custom_components.prad.logic.tariff import DEFAULT_PRICING
 from custom_components.prad.logic.tracker import TrackerRef
 from custom_components.prad.logic.zones import TZ, Zone
 
 D = Decimal
+P, O = Zone.PEAK, Zone.OFFPEAK
 
 
 def test_to_decimal_rounds_to_three_places():
@@ -40,18 +44,21 @@ def _row() -> HistoryRow:
         zuzycie_domu=1.5, produkcja_pv=2.5, autokonsumpcja=1.0, reszta=0.5,
         temp_srednia=9.5, stopniodni=250.0, naslonecznienie_mj=None, wersja_cennika="v1",
         consumers={"sauna": 1.0}, consumers_missing={"sauna": 2}, invoice=D("123.45"), csv_written=True,
-        tariff=DEFAULT_TARIFF.to_dict(), storage_before_cross=True,
+        storage_before_cross=True,
+        segmenty=[PriceSegment(date(2026, 10, 1), date(2026, 10, 31), DEFAULT_PRICING.prices[0], {P: D("370"), O: D("431")}, {P: D("209"), O: D("245")}, {P: D("203"), O: D("235")})],
+        segmenty_opustu=[RatioSegment(date(2026, 10, 1), date(2026, 10, 31), D("0.8"))],
     )
 
 
 def _full_state() -> State:
     t = datetime(2026, 11, 23, 10, tzinfo=TZ)
+    c = Counters(export_offpeak=4.0)
     return State(
         refs={"fox": TrackerRef(t, (1.5, 2.5)), "pv": TrackerRef(t, (100.0,))},
         months={"2026-11": Counters(import_peak=1.25, consumers={"sauna": 0.5}, missing_hours={"fox": 1},
                                     missing_marks=["fox|2026-11-23T09:00:00+01:00"])},
         days={"2026-11-23": Counters(pv=3.0)},
-        pending={"2026-10": PendingClose("2026-10", Counters(export_offpeak=4.0), DEFAULT_TARIFF.to_dict(), True)},
+        pending={"2026-10": PendingClose("2026-10", c, *freeze_segments("2026-10", c, {}, DEFAULT_PRICING), True)},
         inflows=[Inflow("2026-11", Zone.OFFPEAK, D("12.5"), "2027-11")],
         corrections=[{"time": t.isoformat(), "month": "2026-11", "amount": "5"}],
         history=[_row()],
@@ -59,6 +66,8 @@ def _full_state() -> State:
         storage_start="2026-11",
         weather={"2026-11-23": {"temp": 3.5, "radiation": None}},
         last_tick=t,
+        zrodla={"fox": "dwa|sensor.test_import|sensor.test_export"},
+        zmiana_licznika="2026-11-20",
         rebuild_base={"od": "2026-11-23", "inflows": [{"month": "2026-10", "zone": "droga", "amount": "2", "valid_until": "2027-10"}]},
     )
 
@@ -79,7 +88,7 @@ def test_empty_state_roundtrip_defaults():
 
 def test_unsupported_schema():
     with pytest.raises(ValueError, match="unsupported schema"):
-        State.from_dict({"schema": 2})
+        State.from_dict({"schema": 1})
 
 
 def test_state_without_rebuild_base_loads_as_none():
@@ -90,12 +99,28 @@ def test_state_without_rebuild_base_loads_as_none():
 
 def test_history_row_without_frozen_inputs_loads_as_none():
     data = _row().to_dict()
-    del data["tariff"]
+    del data["segmenty"]
+    del data["segmenty_opustu"]
     del data["storage_before_cross"]
     row = HistoryRow.from_dict(data)
-    assert row.tariff is None and row.storage_before_cross is None
+    assert row.segmenty is None and row.segmenty_opustu is None and row.storage_before_cross is None
 
 
 def test_history_row_frozen_inputs_roundtrip():
     restored = HistoryRow.from_dict(json.loads(json.dumps(_row().to_dict())))
-    assert restored.tariff == DEFAULT_TARIFF.to_dict() and restored.storage_before_cross is True
+    assert restored.segmenty == _row().segmenty and restored.storage_before_cross is True
+
+
+def test_pv_brak_makes_derived_values_none():
+    c = Counters(import_peak=3.0, pv=0.0, consumers={"x": 1.0}, pv_brak=True)
+    assert c.house() is None and c.self_consumption() is None and c.rest() is None and c.pv_value() is None
+    assert Counters.from_dict(json.loads(json.dumps(c.to_dict()))).pv_brak is True
+    assert Counters.from_dict({}).pv_brak is False and Counters(pv=2.0).pv_value() == 2.0
+
+
+def test_state_defaults_for_new_fields():
+    data = State().to_dict()
+    del data["zrodla"]
+    del data["zmiana_licznika"]
+    s = State.from_dict(data)
+    assert s.zrodla == {} and s.zmiana_licznika is None and s.schema == 2

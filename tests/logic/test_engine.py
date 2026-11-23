@@ -8,13 +8,18 @@ from custom_components.prad.logic.amounts import compute_amounts
 from custom_components.prad.logic.engine import Engine, Limits
 from custom_components.prad.logic.settlement import Inflow
 from custom_components.prad.logic.state import Counters, PendingClose, State
-from custom_components.prad.logic.tariff import DEFAULT_TARIFF
+from custom_components.prad.logic.segments import freeze_segments
+from custom_components.prad.logic.tariff import DEFAULT_PRICING, EXAMPLE_PRICE_NAME, Pricing
 from custom_components.prad.logic.tracker import TrackerRef
 from custom_components.prad.logic.zones import TZ, Zone
 
 D = Decimal
 LIM = Limits()
-T = DEFAULT_TARIFF
+T = DEFAULT_PRICING
+
+
+def priced(**changes):
+    return Pricing((replace(T.prices[0], **changes),), T.opust)
 
 
 def dt(y, m, d, h=0, mi=0, s=0):
@@ -26,13 +31,14 @@ def engine(consumers=None, **state_kwargs):
 
 
 def pending(month, **counters):
-    return PendingClose(month, Counters(**counters), T.to_dict(), False)
+    c = Counters(**counters)
+    return PendingClose(month, c, *freeze_segments(month, c, {}, T), False)
 
 
 def test_hour_routed_to_zone_and_month():
     e = engine()
     e.state.refs["fox"] = TrackerRef(dt(2026, 11, 23, 10), (100.0, 50.0))
-    warnings = e.on_tick(dt(2026, 11, 23, 11, 0, 10), (101.5, 50.0), None, {}, LIM)
+    warnings = e.on_tick(dt(2026, 11, 23, 11, 0, 10), (101.5, 50.0), None, {}, LIM, T)
     assert warnings == []
     m = e.state.months["2026-11"]
     assert m.import_peak == pytest.approx(1.5) and m.import_offpeak == 0 and m.export_peak == 0
@@ -44,7 +50,7 @@ def test_hour_routed_to_zone_and_month():
 def test_net_export_hour():
     e = engine()
     e.state.refs["fox"] = TrackerRef(dt(2026, 11, 23, 12), (100.0, 50.0))
-    e.on_tick(dt(2026, 11, 23, 13, 0, 5), (100.2, 52.0), None, {}, LIM)
+    e.on_tick(dt(2026, 11, 23, 13, 0, 5), (100.2, 52.0), None, {}, LIM, T)
     m = e.state.months["2026-11"]
     assert m.export_peak == pytest.approx(1.8) and m.import_peak == 0 and m.export_offpeak == 0
 
@@ -53,7 +59,7 @@ def test_missing_hours_counted_for_unavailable_consumer():
     e = engine({"sauna": "Sauna"})
     e.state.refs["fox"] = TrackerRef(dt(2026, 11, 23, 9), (0.0, 0.0))
     e.state.refs["sauna"] = TrackerRef(dt(2026, 11, 23, 9), (0.0,))
-    e.on_tick(dt(2026, 11, 23, 10, 0, 10), None, None, {"sauna": None}, LIM)
+    e.on_tick(dt(2026, 11, 23, 10, 0, 10), None, None, {"sauna": None}, LIM, T)
     assert e.state.months["2026-11"].missing_hours == {"fox": 1, "sauna": 1}
     assert e.state.days["2026-11-23"].missing_hours == {"fox": 1, "sauna": 1}
     assert e.state.months["2026-11"].missing_marks == [
@@ -64,8 +70,8 @@ def test_missing_hours_counted_for_unavailable_consumer():
 def test_missing_hour_counted_once():
     e = engine({"sauna": "Sauna"})
     e.state.refs["sauna"] = TrackerRef(dt(2026, 11, 23, 9), (0.0,))
-    e.on_tick(dt(2026, 11, 23, 10, 0, 10), (1.0, 0.0), None, {"sauna": None}, LIM)
-    e.on_tick(dt(2026, 11, 23, 10, 30), (1.0, 0.0), None, {"sauna": None}, LIM)
+    e.on_tick(dt(2026, 11, 23, 10, 0, 10), (1.0, 0.0), None, {"sauna": None}, LIM, T)
+    e.on_tick(dt(2026, 11, 23, 10, 30), (1.0, 0.0), None, {"sauna": None}, LIM, T)
     assert e.state.months["2026-11"].missing_hours["sauna"] == 1
     assert e.state.days["2026-11-23"].missing_hours["sauna"] == 1
     assert "fox" not in e.state.months["2026-11"].missing_hours
@@ -78,7 +84,7 @@ def test_gap_over_month_boundary_closes_after_data():
     assert e.months_ready_to_freeze(dt(2026, 12, 1, 1, 30)) == []
     assert e.catch_up(dt(2026, 12, 1, 1, 30), T, False, LIM) == [] and e.state.history == []
     assert "2026-11" in e.state.months
-    e.on_tick(dt(2026, 12, 1, 2, 0, 10), (3.0, 0.0), None, {}, LIM)
+    e.on_tick(dt(2026, 12, 1, 2, 0, 10), (3.0, 0.0), None, {}, LIM, T)
     assert e.state.months["2026-11"].import_offpeak == pytest.approx(1.0)
     assert e.state.months["2026-12"].import_offpeak == pytest.approx(2.0)
     assert e.months_ready_to_freeze(dt(2026, 12, 1, 2, 0, 10)) == ["2026-11"]
@@ -91,7 +97,7 @@ def test_gap_over_month_boundary_closes_after_data():
 def test_pv_zero_treated_as_unavailable():
     e = engine()
     e.state.refs["pv"] = TrackerRef(dt(2026, 11, 23, 10), (500.0,))
-    warnings = e.on_tick(dt(2026, 11, 23, 11, 0, 10), None, 0.0, {}, LIM)
+    warnings = e.on_tick(dt(2026, 11, 23, 11, 0, 10), None, 0.0, {}, LIM, T)
     assert warnings == []
     assert e.state.refs["pv"].time == dt(2026, 11, 23, 10) and e.state.refs["pv"].values == (500.0,)
     assert "pv" not in e.state.months.get("2026-11", Counters()).missing_hours
@@ -101,13 +107,13 @@ def test_secondary_tracker_hours_for_frozen_month():
     e = engine()
     e.state.pending["2026-11"] = pending("2026-11")
     e.state.refs["pv"] = TrackerRef(dt(2026, 11, 30, 16), (100.0,))
-    warnings = e.on_tick(dt(2026, 12, 1, 8, 0, 10), None, 116.0, {}, LIM)
+    warnings = e.on_tick(dt(2026, 12, 1, 8, 0, 10), None, 116.0, {}, LIM, T)
     assert warnings == []
     assert e.state.pending["2026-11"].counters.pv == pytest.approx(8.0)
     assert e.state.months["2026-12"].pv == pytest.approx(8.0)
     e.close_month("2026-11", dt(2026, 12, 1, 8), LIM)
     e.state.refs["pv"] = TrackerRef(dt(2026, 11, 30, 22), (116.0,))
-    warnings = e.on_tick(dt(2026, 12, 1, 0, 0, 10), None, 118.0, {}, LIM)
+    warnings = e.on_tick(dt(2026, 12, 1, 0, 0, 10), None, 118.0, {}, LIM, T)
     assert warnings == ["pv: 2 hours for closed month dropped"]
     assert "2026-11" not in e.state.months and "2026-11" not in e.state.pending
     assert e.state.months["2026-12"].pv == pytest.approx(8.0)
@@ -120,7 +126,7 @@ def test_no_dropped_warning_when_dropped_energy_is_zero():
     e.state.refs["fox"] = TrackerRef(dt(2026, 12, 1, 1), (0.0, 0.0))
     e.state.months["2026-12"] = Counters()
     e.close_month("2026-11", dt(2026, 12, 1, 8), LIM)
-    warnings = e.on_tick(dt(2026, 12, 1, 0, 0, 10), None, 116.0, {}, LIM)
+    warnings = e.on_tick(dt(2026, 12, 1, 0, 0, 10), None, 116.0, {}, LIM, T)
     assert warnings == []
 
 
@@ -129,8 +135,10 @@ def test_close_fills_frozen_inputs():
     e.state.months["2026-11"] = Counters(import_peak=10.0)
     e.state.refs["fox"] = TrackerRef(dt(2026, 12, 1), (0.0, 0.0))
     e.freeze_month("2026-11", T, True)
-    row = e.catch_up(dt(2026, 12, 1, 1), replace(T, energy_peak=D("9")), False, LIM)[0]
-    assert row.tariff == T.to_dict() and row.storage_before_cross is True
+    row = e.catch_up(dt(2026, 12, 1, 1), priced(energy_peak=D("9")), False, LIM)[0]
+    assert row.segmenty[0].cennik == T.prices[0]
+    assert row.segmenty_opustu[0].wspolczynnik == D("0.8")
+    assert row.storage_before_cross is True
 
 
 def test_close_uses_frozen_tariff():
@@ -138,19 +146,19 @@ def test_close_uses_frozen_tariff():
     e.state.months["2026-11"] = Counters(import_peak=100.0)
     e.state.refs["fox"] = TrackerRef(dt(2026, 12, 1), (0.0, 0.0))
     e.freeze_month("2026-11", T, False)
-    new_tariff = replace(T, energy_peak=D("9"), version="new")
-    rows = e.catch_up(dt(2026, 12, 1, 1), new_tariff, False, LIM)
+    new_pricing = priced(energy_peak=D("9"), nazwa="new")
+    rows = e.catch_up(dt(2026, 12, 1, 1), new_pricing, False, LIM)
     assert len(rows) == 1
     row = rows[0]
     expected = compute_amounts(
-        {Zone.PEAK: D("100"), Zone.OFFPEAK: D("0")}, {Zone.PEAK: D("100"), Zone.OFFPEAK: D("0")}, T
+        {Zone.PEAK: D("100"), Zone.OFFPEAK: D("0")}, {Zone.PEAK: D("100"), Zone.OFFPEAK: D("0")}, T.prices[0]
     ).gross
     changed = compute_amounts(
         {Zone.PEAK: D("100"), Zone.OFFPEAK: D("0")}, {Zone.PEAK: D("100"), Zone.OFFPEAK: D("0")},
-        replace(T, energy_peak=D("9")),
+        replace(T.prices[0], energy_peak=D("9")),
     ).gross
     assert expected != changed
-    assert row.koszt_razem == expected and row.wersja_cennika == "2026-09 faktura"
+    assert row.koszt_razem == expected and row.wersja_cennika == EXAMPLE_PRICE_NAME
 
 
 def test_september_close_reproduces_invoice():
@@ -307,7 +315,7 @@ def test_set_invoice_rules():
 def test_rejected_reading_warns_and_resets_reference():
     e = engine()
     e.state.refs["fox"] = TrackerRef(dt(2026, 11, 23, 10), (100.0, 50.0))
-    warnings = e.on_tick(dt(2026, 11, 23, 11, 0, 10), (90.0, 50.0), None, {}, LIM)
+    warnings = e.on_tick(dt(2026, 11, 23, 11, 0, 10), (90.0, 50.0), None, {}, LIM, T)
     assert warnings == ["fox: negative, new reference"]
     assert e.state.refs["fox"].values == (90.0, 50.0)
     assert e.state.last_tick is None
@@ -317,7 +325,7 @@ def test_consumer_and_pv_hours_are_summed():
     e = engine({"sauna": "Sauna"})
     e.state.refs["sauna"] = TrackerRef(dt(2026, 11, 23, 10), (5.0,))
     e.state.refs["pv"] = TrackerRef(dt(2026, 11, 23, 10), (50.0,))
-    e.on_tick(dt(2026, 11, 23, 11, 0, 10), (1.0, 0.0), 52.0, {"sauna": 6.5}, LIM)
+    e.on_tick(dt(2026, 11, 23, 11, 0, 10), (1.0, 0.0), 52.0, {"sauna": 6.5}, LIM, T)
     m = e.state.months["2026-11"]
     assert m.consumers["sauna"] == pytest.approx(1.5) and m.pv == pytest.approx(2.0)
     assert e.state.days["2026-11-23"].consumers["sauna"] == pytest.approx(1.5)
@@ -330,7 +338,7 @@ def test_on_tick_trims_days_weather_and_marks():
     e.state.weather = {"2024-01-01": {"temp": 1.0}, "2025-10-20": {"temp": 1.0}, "2026-11-22": {"temp": 1.0}}
     old = (now - timedelta(hours=60)).replace(minute=0, second=0).isoformat()
     e.state.months["2026-11"] = Counters(missing_marks=[f"sauna|{old}"], missing_hours={"sauna": 1})
-    e.on_tick(now, (1.0, 0.0), None, {}, LIM)
+    e.on_tick(now, (1.0, 0.0), None, {}, LIM, T)
     assert "2026-09-01" not in e.state.days and "2026-10-09" not in e.state.days
     assert "2026-10-10" in e.state.days and "2026-11-22" in e.state.days
     assert "2024-01-01" not in e.state.weather and "2025-10-20" in e.state.weather
@@ -340,7 +348,7 @@ def test_on_tick_trims_days_weather_and_marks():
 
 def test_missing_not_counted_without_started_tracker():
     e = engine({"sauna": "Sauna"})
-    e.on_tick(dt(2026, 12, 1, 0, 30), (1.0, 0.0), None, {"sauna": None}, LIM)
+    e.on_tick(dt(2026, 12, 1, 0, 30), (1.0, 0.0), None, {"sauna": None}, LIM, T)
     assert e.state.months == {} and e.state.days == {}
     assert e.catch_up(dt(2026, 12, 1, 2), T, False, LIM) == [] and e.state.history == []
 
@@ -348,8 +356,8 @@ def test_missing_not_counted_without_started_tracker():
 def test_missing_not_counted_for_already_accounted_hour():
     e = engine()
     e.state.refs["fox"] = TrackerRef(dt(2026, 11, 23, 9), (0.0, 0.0))
-    e.on_tick(dt(2026, 11, 23, 10, 0, 10), (1.0, 0.0), None, {}, LIM)
-    e.on_tick(dt(2026, 11, 23, 10, 30), None, None, {}, LIM)
+    e.on_tick(dt(2026, 11, 23, 10, 0, 10), (1.0, 0.0), None, {}, LIM, T)
+    e.on_tick(dt(2026, 11, 23, 10, 30), None, None, {}, LIM, T)
     assert e.state.months["2026-11"].missing_hours.get("fox", 0) == 0
 
 

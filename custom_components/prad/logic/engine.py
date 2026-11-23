@@ -8,17 +8,20 @@ import copy
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from . import climate
-from .amounts import Totals, compute_amounts
-from .settlement import Inflow, Settlement, settle
-from .state import Counters, HistoryRow, PendingClose, State, to_decimal
-from .tariff import Tariff
+from .amounts import (
+    SegmentAmounts, Totals, compute_amounts_segments, split_kwh, split_largest_remainder, split_proportional,
+)
+from .segments import COUNTER_KEYS, freeze_segments, price_runs, ratio_runs, run_energy
+from .settlement import Inflow, Settlement, credit_final, credit_running, round_kwh, settle
+from .state import Counters, HistoryRow, PendingClose, PriceSegment, RatioSegment, State, to_decimal
+from .tariff import Pricing
 from .tracker import HourDelta, advance, floor_hour
 from .zones import (
-    TAURON_G12W, TZ, Zone, add_months, day_key, days_in_month, month_key, month_start, next_month_key, zone_at,
+    TZ, Zone, add_months, day_key, days_in_month, month_key, month_start, next_month_key, zone_at,
 )
 
 _ZERO = Decimal(0)
@@ -52,9 +55,8 @@ def _order(i: Inflow) -> tuple[str, int]:
     return (i.month, 0 if i.zone is Zone.PEAK else 1)
 
 
-def _add_fox(c: Counters, h: HourDelta) -> None:
-    net = h.deltas[0] - h.deltas[1]
-    peak = zone_at(h.start, TAURON_G12W) is Zone.PEAK
+def _add_grid(c: Counters, net: float, zone: Zone) -> None:
+    peak = zone is Zone.PEAK
     if net > 0:
         attr = "import_peak" if peak else "import_offpeak"
         setattr(c, attr, getattr(c, attr) + net)
@@ -68,28 +70,99 @@ def _add_pv(c: Counters, h: HourDelta) -> None:
 
 
 class Engine:
-    def __init__(self, state: State, consumers: dict[str, str]) -> None:
+    def __init__(
+        self, state: State, consumers: dict[str, str], *, grid_mode: str = "dwa", has_pv: bool = True
+    ) -> None:
         self.state = state
         self.consumers = consumers
+        self.grid_mode = grid_mode
+        self.has_pv = has_pv
+        # Price list override per month; set only by prad.inicjuj.
+        self.month_pricing: dict[str, Pricing] = {}
+
+    def _pricing(self, month: str, pricing: Pricing) -> Pricing:
+        return self.month_pricing.get(month, pricing)
+
+    # ------------------------------------------------------------- sources
+
+    def sync_sources(self, signatures: dict[str, str], today: date) -> bool:
+        """Reconcile stored source signatures with the configured ones. True when the state changed."""
+        st = self.state
+        first = not st.zrodla
+        changed = False
+
+        def touch() -> None:
+            current = st.zmiana_licznika
+            st.zmiana_licznika = today.isoformat() if current is None else max(current, today.isoformat())
+
+        for key, signature in signatures.items():
+            stored = st.zrodla.get(key)
+            if stored is None:
+                st.zrodla[key] = signature
+                changed = True
+                if key == "pv" and not first:
+                    touch()
+            elif stored != signature:
+                st.refs.pop(key, None)
+                st.zrodla[key] = signature
+                changed = True
+                if key in ("fox", "pv"):
+                    touch()
+        for key in sorted(set(st.zrodla) | set(st.refs)):
+            if key in signatures:
+                continue
+            was_stored = key in st.zrodla
+            st.zrodla.pop(key, None)
+            st.refs.pop(key, None)
+            changed = True
+            if key == "pv" and was_stored:
+                touch()
+        return changed
+
+    def counted_range(self) -> tuple[date, date] | None:
+        st = self.state
+        months = set(st.months) | set(st.pending)
+        if not months or st.last_tick is None:
+            return None
+        oldest = min(months)
+        first = date(int(oldest[:4]), int(oldest[5:7]), 1)
+        last = (st.last_tick - timedelta(hours=1)).astimezone(TZ).date()
+        if last < first:
+            return None
+        return first, last
 
     # ---------------------------------------------------------------- tick
 
     def on_tick(
         self,
         now: datetime,
-        fox: tuple[float, float] | None,
+        fox: tuple[float, ...] | None,
         pv: float | None,
         consumers: dict[str, float | None],
         limits: Limits,
+        pricing: Pricing,
     ) -> list[str]:
         now = now.astimezone(TZ)
         warnings: list[str] = []
+        net_mode = self.grid_mode == "netto"
+        has_pv = self.has_pv
 
-        if self._track("fox", now, fox, limits.fox, _add_fox, warnings):
+        def add_grid(c: Counters, h: HourDelta) -> None:
+            schedule = self._pricing(month_key(h.start), pricing).schedule_at(h.start)
+            net = h.deltas[0] if net_mode else h.deltas[0] - h.deltas[1]
+            _add_grid(c, net, zone_at(h.start, schedule))
+            if not has_pv:
+                c.pv_brak = True
+
+        if self._track(
+            "fox", now, fox, limits.fox, add_grid, warnings,
+            signed=net_mode, limit_negative=limits.pv if net_mode else None,
+        ):
             self.state.last_tick = self.state.refs["fox"].time
         if fox is None:
             self._mark_missing("fox", now)
-        self._track("pv", now, (pv,) if pv else None, limits.pv, _add_pv, warnings)
+        if has_pv:
+            self._track("pv", now, (pv,) if pv else None, limits.pv, _add_pv, warnings)
         for slug in {**dict.fromkeys(self.consumers), **consumers}:
             value = consumers.get(slug)
 
@@ -110,9 +183,14 @@ class Engine:
         limit: float,
         add: Callable[[Counters, HourDelta], None],
         warnings: list[str],
+        *,
+        signed: bool = False,
+        limit_negative: float | None = None,
     ) -> bool:
         """Advance one tracker and route its hours. Returns True when a reading was accepted."""
-        result = advance(self.state.refs.get(key), now, values, limit)
+        result = advance(
+            self.state.refs.get(key), now, values, limit, signed=signed, limit_negative=limit_negative
+        )
         if result.new_ref is not None:
             self.state.refs[key] = result.new_ref
         if result.rejected:
@@ -186,9 +264,10 @@ class Engine:
             m for m in self.state.months if m < current and fox.time >= month_start(next_month_key(m))
         )
 
-    def freeze_month(self, month: str, tariff: Tariff, storage_before_cross: bool) -> None:
+    def freeze_month(self, month: str, pricing: Pricing, storage_before_cross: bool) -> None:
         counters = self.state.months.pop(month)
-        self.state.pending[month] = PendingClose(month, counters, tariff.to_dict(), storage_before_cross)
+        price, ratio = freeze_segments(month, counters, self.state.days, self._pricing(month, pricing))
+        self.state.pending[month] = PendingClose(month, counters, price, ratio, storage_before_cross)
 
     def months_ready_to_close(self, now: datetime) -> list[str]:
         return sorted(
@@ -208,20 +287,55 @@ class Engine:
             raise ValueError(f"wcześniejszy miesiąc nie jest jeszcze zamknięty (przed {month})")
         pending = st.pending[month]
         c = pending.counters
-        tariff = Tariff.from_dict(pending.tariff)
         before_start = month < st.storage_start
+        peak, off = Zone.PEAK, Zone.OFFPEAK
+        zones = (peak, off)
+        cons = {z: round_kwh(v) for z, v in _decimals(c.import_peak, c.import_offpeak).items()}
+        exp = {z: round_kwh(v) for z, v in _decimals(c.export_peak, c.export_offpeak).items()}
+        credit = credit_final(exp, [(rs.wspolczynnik, rs.oddanie or {}) for rs in pending.segmenty_opustu])
         s = settle(
-            month,
-            _decimals(c.import_peak, c.import_offpeak),
-            _decimals(c.export_peak, c.export_offpeak),
+            month, cons, exp,
             () if before_start else tuple(st.inflows),
-            tariff.credit_ratio,
+            Decimal(0),
             pending.storage_before_cross,
             True,
+            credit=credit,
         )
-        totals = compute_amounts(s.consumption, s.billable, tariff)
+        segs = pending.segmenty_cen
+        consumed: dict[Zone, list[int]] = {}
+        payable: dict[Zone, list[Decimal]] = {}
+        exported: dict[Zone, list[int]] = {}
+        for z in zones:
+            weights = [seg.pobor[z] for seg in segs]
+            consumed[z] = split_largest_remainder(int(s.consumption[z]), weights)
+            payable[z] = split_kwh(s.billable[z], weights)
+            exported[z] = split_largest_remainder(int(s.export[z]), [seg.oddanie[z] for seg in segs])
+        totals = compute_amounts_segments(
+            [
+                SegmentAmounts(
+                    seg.cennik,
+                    (seg.do - seg.od).days + 1,
+                    {z: Decimal(consumed[z][i]) for z in zones},
+                    {z: payable[z][i] for z in zones},
+                )
+                for i, seg in enumerate(segs)
+            ],
+            days_in_month(month),
+        )
+        names: list[str] = []
+        for seg in segs:
+            if seg.cennik.nazwa not in names:
+                names.append(seg.cennik.nazwa)
+        history_segments = [
+            PriceSegment(
+                seg.od, seg.do, seg.cennik,
+                {z: Decimal(consumed[z][i]) for z in zones},
+                {z: Decimal(exported[z][i]) for z in zones},
+                {z: payable[z][i] for z in zones},
+            )
+            for i, seg in enumerate(segs)
+        ]
         temp, dd, radiation = self._weather_of(month, limits.degree_day_base)
-        peak, off = Zone.PEAK, Zone.OFFPEAK
         row = HistoryRow(
             month=month,
             pobor_droga=s.consumption[peak], pobor_tania=s.consumption[off],
@@ -233,11 +347,13 @@ class Engine:
             do_zaplaty_droga=s.billable[peak], do_zaplaty_tania=s.billable[off],
             koszt_droga=totals.peak_gross, koszt_tania=totals.offpeak_gross,
             oplaty_stale=totals.fixed_gross, koszt_netto=totals.net, koszt_razem=totals.gross,
-            zuzycie_domu=c.house(), produkcja_pv=c.pv, autokonsumpcja=c.self_consumption(), reszta=c.rest(),
+            zuzycie_domu=c.house(), produkcja_pv=c.pv_value(), autokonsumpcja=c.self_consumption(), reszta=c.rest(),
             temp_srednia=temp, stopniodni=dd, naslonecznienie_mj=radiation,
-            wersja_cennika=tariff.version,
+            wersja_cennika=" + ".join(names),
             consumers=dict(c.consumers), consumers_missing=dict(c.missing_hours),
-            tariff=dict(pending.tariff), storage_before_cross=pending.storage_before_cross,
+            storage_before_cross=pending.storage_before_cross,
+            segmenty=history_segments,
+            segmenty_opustu=[RatioSegment(rs.od, rs.do, rs.wspolczynnik) for rs in pending.segmenty_opustu],
         )
         st.history.append(row)
         if not before_start:
@@ -260,55 +376,105 @@ class Engine:
         return temp, dd, radiation
 
     def catch_up(
-        self, now: datetime, tariff: Tariff, storage_before_cross: bool, limits: Limits
+        self, now: datetime, pricing: Pricing, storage_before_cross: bool, limits: Limits
     ) -> list[HistoryRow]:
         for m in self.months_ready_to_freeze(now):
-            self.freeze_month(m, tariff, storage_before_cross)
+            self.freeze_month(m, pricing, storage_before_cross)
         return [self.close_month(m, now, limits) for m in self.months_ready_to_close(now)]
 
     # ------------------------------------------------------------ snapshots
 
     def _snapshot(
-        self, month: str, counters: Counters, tariff: Tariff, storage_before_cross: bool
+        self,
+        month: str,
+        counters: Counters,
+        pricing: Pricing,
+        storage_before_cross: bool,
+        extra: dict[date, dict[str, float]] | None = None,
     ) -> Snapshot:
-        inflows = () if month < self.state.storage_start else tuple(self.state.inflows)
-        s = settle(
-            month,
-            _decimals(counters.import_peak, counters.import_offpeak),
-            _decimals(counters.export_peak, counters.export_offpeak),
-            inflows,
-            tariff.credit_ratio,
-            storage_before_cross,
-            False,
+        pruns = price_runs(month, pricing)
+        rruns = ratio_runs(month, pricing)
+        current = self.state.months.get(month, Counters())
+        p_energy = run_energy(current, self.state.days, [(a, b) for a, b, _ in pruns], extra)
+        r_energy = run_energy(current, self.state.days, [(a, b) for a, b, _ in rruns], extra)
+        peak, off = Zone.PEAK, Zone.OFFPEAK
+        cons = _decimals(counters.import_peak, counters.import_offpeak)
+        exp = _decimals(counters.export_peak, counters.export_offpeak)
+        credit = credit_running(
+            exp,
+            [
+                (ratio, {peak: e["export_peak"], off: e["export_offpeak"]})
+                for (_, _, ratio), e in zip(rruns, r_energy)
+            ],
         )
-        return Snapshot(s, compute_amounts(s.consumption, s.billable, tariff), counters)
+        inflows = () if month < self.state.storage_start else tuple(self.state.inflows)
+        s = settle(month, cons, exp, inflows, Decimal(0), storage_before_cross, False, credit=credit)
+        weights = {
+            peak: [e["import_peak"] for e in p_energy],
+            off: [e["import_offpeak"] for e in p_energy],
+        }
+        consumed = {z: split_proportional(s.consumption[z], weights[z]) for z in (peak, off)}
+        payable = {z: split_proportional(s.billable[z], weights[z]) for z in (peak, off)}
+        totals = compute_amounts_segments(
+            [
+                SegmentAmounts(
+                    version,
+                    (b - a).days + 1,
+                    {z: consumed[z][i] for z in (peak, off)},
+                    {z: payable[z][i] for z in (peak, off)},
+                )
+                for i, (a, b, version) in enumerate(pruns)
+            ],
+            days_in_month(month),
+        )
+        return Snapshot(s, totals, counters)
 
-    def current_snapshot(self, now: datetime, tariff: Tariff, storage_before_cross: bool) -> Snapshot:
+    def current_snapshot(self, now: datetime, pricing: Pricing, storage_before_cross: bool) -> Snapshot:
         m = month_key(now)
         counters = copy.deepcopy(self.state.months.get(m, Counters()))
-        return self._snapshot(m, counters, tariff, storage_before_cross)
+        return self._snapshot(m, counters, pricing, storage_before_cross)
 
     def forecast_snapshot(
-        self, now: datetime, tariff: Tariff, storage_before_cross: bool
+        self, now: datetime, pricing: Pricing, storage_before_cross: bool
     ) -> Snapshot | None:
+        now = now.astimezone(TZ)
         m = month_key(now)
         today = day_key(now)
         keys = sorted(k for k in self.state.days if k < today)[-FORECAST_DAYS:]
         if not keys:
             return None
         days = [self.state.days[k] for k in keys]
-        remaining = (month_start(next_month_key(m)) - now) / timedelta(days=1)
+        means = {key: sum(getattr(d, key) for d in days) / len(days) for key in COUNTER_KEYS}
         counters = copy.deepcopy(self.state.months.get(m, Counters()))
-        for attr in ("import_peak", "import_offpeak", "export_peak", "export_offpeak"):
-            mean = sum(getattr(d, attr) for d in days) / len(days)
-            setattr(counters, attr, getattr(counters, attr) + mean * remaining)
-        return self._snapshot(m, counters, tariff, storage_before_cross)
+        extra: dict[date, dict[str, float]] = {}
+        day = now.date()
+        last_day = date(now.year, now.month, days_in_month(m))
+        while day <= last_day:
+            midnight = datetime(day.year, day.month, day.day, tzinfo=TZ)
+            following_day = day + timedelta(days=1)
+            following = datetime(following_day.year, following_day.month, following_day.day, tzinfo=TZ)
+            # same tzinfo on both sides: the difference is local wall-clock time, so a full day is always 1.0
+            fraction = (following - max(now, midnight)) / timedelta(days=1)
+            if pricing.price_at(day).taryfa == "G11":
+                values = {
+                    "import_peak": (means["import_peak"] + means["import_offpeak"]) * fraction,
+                    "import_offpeak": 0.0,
+                    "export_peak": (means["export_peak"] + means["export_offpeak"]) * fraction,
+                    "export_offpeak": 0.0,
+                }
+            else:
+                values = {key: means[key] * fraction for key in COUNTER_KEYS}
+            extra[day] = values
+            for key in COUNTER_KEYS:
+                setattr(counters, key, getattr(counters, key) + values[key])
+            day = following_day
+        return self._snapshot(m, counters, pricing, storage_before_cross, extra)
 
     def storage_kwh(self) -> Decimal:
         return sum((i.amount for i in self.state.inflows), _ZERO)
 
-    def month_inflow(self, now: datetime, tariff: Tariff, storage_before_cross: bool) -> Decimal:
-        snap = self.current_snapshot(now, tariff, storage_before_cross)
+    def month_inflow(self, now: datetime, pricing: Pricing, storage_before_cross: bool) -> Decimal:
+        snap = self.current_snapshot(now, pricing, storage_before_cross)
         return sum((i.amount for i in snap.settlement.new_inflows), _ZERO)
 
     # ---------------------------------------------------------- user actions
