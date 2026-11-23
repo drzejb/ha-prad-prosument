@@ -69,6 +69,7 @@ PRICE_FIELDS: tuple[str, ...] = (
     "cogeneration", "fixed_network", "subscription", "capacity", "trade", "transition", "vat_percent",
 )
 EXAMPLE_PRICE_NAME = "Tauron G12w 2026 (przykład – sprawdź z fakturą)"
+MAX_NAME_LENGTH = 100
 EMPTY_PRICE_NAME = "Cennik – uzupełnij ceny"
 
 
@@ -110,6 +111,8 @@ class PriceVersion:
             raise ValueError("VAT musi być między 0 a 100")
         if self.nazwa.strip() == "":
             raise ValueError("Podaj nazwę cennika")
+        if len(self.nazwa) > MAX_NAME_LENGTH:
+            raise ValueError("Nazwa cennika może mieć najwyżej 100 znaków")
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {

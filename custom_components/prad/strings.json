@@ -212,6 +212,7 @@
       "last_version": "The last entry cannot be removed.",
       "unknown_version": "There is no such entry.",
       "name_required": "Enter a name for the price list.",
+      "name_too_long": "The price list name can have at most 100 characters.",
       "price_invalid": "Check the prices: they cannot be negative, VAT 0-100.",
       "ratio_invalid": "The net-metering ratio must be between 0 and 1."
     },

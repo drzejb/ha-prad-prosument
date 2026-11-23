@@ -222,3 +222,12 @@ async def test_options_edit_own_hours_prefills_stored_weekend(hass, freezer):
     assert res["step_id"] == "cennik_strefy"
     defaults = {str(k): k.default() for k in res["data_schema"].schema if k in ("weekend", "swieta")}
     assert defaults == {"weekend": "tania", "swieta": "robocze"}  # not the G12 layout defaults (robocze / weekend)
+
+
+async def test_options_price_name_too_long_is_a_name_error(hass, freezer):
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = await _setup_entry(hass)
+    fid, _ = await _open(hass, entry, "cenniki", "cennik_add")
+    res = await hass.config_entries.options.async_configure(
+        fid, {"od": "2026-12-15", "nazwa": "x" * 101, "rozklad": "tauron_g12w", "force": False})
+    assert res["step_id"] == "cennik_dane" and res["errors"] == {"nazwa": "name_too_long"}
