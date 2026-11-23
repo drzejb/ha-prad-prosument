@@ -1,6 +1,7 @@
 """Meter change in the options flow and net meter mode."""
 import pytest
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import ServiceValidationError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.prad.const import DOMAIN
@@ -32,6 +33,9 @@ async def test_changing_meter_keeps_history_and_drops_reference(hass, freezer):
     hass.states.async_set("sensor.test_import_new", "5000")
     await _tick_at(hass, freezer, "2026-11-23 12:00:10+01:00")              # this hour only sets the reference point
     assert entry.runtime_data.engine.state.months["2026-11"].import_peak == pytest.approx(1.5)
+    with pytest.raises(ServiceValidationError, match="Liczniki zmieniono 2026-11-23"):
+        await hass.services.async_call(DOMAIN, "inicjuj", {"od": "2026-11-20", "poczatek_magazynu": "2026-11", "potwierdz": True},
+                                       blocking=True, return_response=True)
 
 
 async def test_net_meter_tick(hass, freezer):

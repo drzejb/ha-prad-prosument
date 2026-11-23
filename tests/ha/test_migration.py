@@ -151,3 +151,70 @@ async def test_concurrent_number_edits_are_both_kept(hass, freezer):
     )
     assert c.prices[0].energy_peak == Decimal("0.7") and c.prices[0].energy_offpeak == Decimal("0.5")
     assert c.prices[0].vat_percent == Decimal("8")
+
+
+async def _import_stats(hass, entity_id: str, step: float, first: datetime, hours: int) -> None:
+    metadata = StatisticMetaData(
+        mean_type=StatisticMeanType.NONE, has_sum=True, name=None, source="recorder",
+        statistic_id=entity_id, unit_class="energy", unit_of_measurement="kWh",
+    )
+    stats = [StatisticData(start=first + timedelta(hours=n), state=100 + step * n, sum=step * n) for n in range(hours)]
+    async_import_statistics(hass, metadata, stats)
+    await async_wait_recording_done(hass)
+
+
+def _money_and_kwh(state):
+    skip = ("segmenty", "segmenty_opustu", "wersja_cennika", "csv_written")
+    return (
+        [{k: v for k, v in r.to_dict().items() if k not in skip} for r in state.history],
+        [inflow_to_dict(i) for i in state.inflows],
+    )
+
+
+def _downgrade(payload: dict) -> dict:
+    """v0.3 Store payload -> v0.2 shape (one price version, one ratio)."""
+    from v02_fixture import V02_SETTINGS
+    from custom_components.prad.logic.tariff import DEFAULT_TARIFF
+
+    state = copy.deepcopy(payload["state"])
+    state["schema"] = 1
+    state.pop("zrodla"); state.pop("zmiana_licznika")
+    for bucket in (*state["months"].values(), *state["days"].values()):
+        bucket.pop("pv_brak")
+    for row in state["history"]:
+        row.pop("segmenty"); row.pop("segmenty_opustu")
+        row["tariff"] = DEFAULT_TARIFF.to_dict()
+        row["wersja_cennika"] = "2026-09 faktura"
+    assert state["pending"] == {}
+    return {"state": state, "settings": dict(V02_SETTINGS)}
+
+
+async def test_inicjuj_gives_same_rows_before_and_after_migration(hass, hass_storage, freezer, tmp_path, aioclient_mock):
+    freezer.move_to("2026-11-02 12:00:00+01:00")
+    aioclient_mock.clear_requests()
+    aioclient_mock.get("https://api.open-meteo.com/v1/forecast", status=500)
+    aioclient_mock.get("https://archive-api.open-meteo.com/v1/archive", status=500)
+    hass.config.config_dir = str(tmp_path)
+    entry = MockConfigEntry(domain=DOMAIN, data={**V02_DATA, "tryb_sieci": "dwa"}, options={"consumers": []}, version=1, minor_version=2)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    first = datetime(2026, 10, 29, 22, 0, tzinfo=UTC)
+    hours = int((datetime(2026, 11, 2, 10, 0, tzinfo=UTC) - first) / timedelta(hours=1)) + 1
+    await _import_stats(hass, "sensor.test_import", 0.5, first, hours)
+    await _import_stats(hass, "sensor.test_export", 0.1, first, hours)
+    await _import_stats(hass, "sensor.test_pv", 0.2, first, hours)
+    call = {"od": "2026-10-30", "poczatek_magazynu": "2026-09", "potwierdz": True}
+    await hass.services.async_call(DOMAIN, "inicjuj", call, blocking=True, return_response=True)
+    c = entry.runtime_data
+    before = _money_and_kwh(c.engine.state)
+    old_payload = _downgrade(c.payload())
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    hass_storage["prad"] = {"version": 1, "minor_version": 1, "key": "prad", "data": old_payload}
+    hass_storage.pop("prad_backup_v02", None)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass_storage["prad_backup_v02"]["data"] == old_payload
+    assert _money_and_kwh(entry.runtime_data.engine.state) == before            # sama migracja nic nie zmienia
+    await hass.services.async_call(DOMAIN, "inicjuj", call, blocking=True, return_response=True)
+    assert _money_and_kwh(entry.runtime_data.engine.state) == before            # inicjuj z tym samym `od` – te same wiersze

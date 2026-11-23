@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, time
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
 
@@ -82,6 +82,11 @@ async def _rebuild(call: ServiceCall) -> dict[str, Any]:
     start = datetime.combine(day, time(0), tzinfo=TZ)
     async with coordinator.lock:
         st = coordinator.engine.state
+        if st.zmiana_licznika and day < date.fromisoformat(st.zmiana_licznika):
+            raise ServiceValidationError(
+                f"Liczniki zmieniono {st.zmiana_licznika} – przeliczenie sprzed tej daty "
+                "użyłoby statystyk nowego licznika"
+            )
         if (st.history or st.inflows or st.corrections) and not call.data["potwierdz"]:
             raise ServiceValidationError("Stan już istnieje (historia, magazyn lub korekty) – wywołaj z potwierdz: true")
         return await async_rebuild(call.hass, coordinator, start, call.data["poczatek_magazynu"])

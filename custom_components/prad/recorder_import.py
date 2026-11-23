@@ -14,7 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_EXPORT, CONF_IMPORT, CONF_PV, CONF_TEMP
+from .const import CONF_EXPORT, CONF_IMPORT, CONF_NET, CONF_PV, CONF_TEMP, GRID_NET
 from .logic.engine import Engine
 from .logic.state import State, inflow_from_dict, inflow_to_dict
 from .logic.tariff import OpustEntry, Pricing
@@ -43,16 +43,29 @@ async def async_rebuild(
     Must be called with coordinator.lock held.
     """
     data = coordinator.config_entry.data
+    net_mode = coordinator.grid_mode() == GRID_NET
     import_id, export_id, pv_id = data.get(CONF_IMPORT), data.get(CONF_EXPORT), data.get(CONF_PV)
+    net_id = data.get(CONF_NET)
     consumer_ids = dict(coordinator.consumer_entities)
-    wanted = {e for e in (import_id, export_id, pv_id, *consumer_ids.values()) if e}
+    if net_mode:
+        # Judged from the state attributes, so it works even while the meter is unavailable.
+        net_state = hass.states.get(net_id) if net_id else None
+        if net_state is None or net_state.attributes.get("state_class") != "total":
+            raise ServiceValidationError(
+                "Licznik netto musi mieć state_class: total – licznik malejący z total_increasing "
+                "Home Assistant traktuje jako reset"
+            )
+        grid_ids = [net_id]
+    else:
+        grid_ids = [import_id, export_id]
+    wanted = {e for e in (*grid_ids, pv_id, *consumer_ids.values()) if e}
 
     now = dt_util.utcnow()
     first_hour = start.astimezone(UTC) - _HOUR  # the first hour only sets the reference point
     stats = await get_instance(hass).async_add_executor_job(
         statistics_during_period, hass, first_hour, now, wanted, "hour", {"energy": "kWh"}, {"state"}
     )
-    missing = [e for e in (import_id, export_id) if not stats.get(e)]
+    missing = [e for e in grid_ids if not stats.get(e)]
     if missing:
         raise ServiceValidationError(
             "Brak statystyk w rejestratorze dla: " + ", ".join(str(e) for e in missing)
@@ -63,9 +76,9 @@ async def async_rebuild(
             _utc_hour(r["start"]): float(r["state"]) for r in rows if r.get("state") is not None
         }
 
-    if not (by_entity.get(import_id, {}).keys() & by_entity.get(export_id, {}).keys()):
+    if not set.intersection(*(set(by_entity.get(e, {})) for e in grid_ids)):
         raise ServiceValidationError(
-            "Statystyki importu i eksportu nie zawierają odczytów stanu licznika (state); "
+            "Statystyki licznika sieci nie zawierają odczytów stanu licznika (state); "
             "wybierz liczniki energii z sumą narastającą"
         )
 
@@ -149,8 +162,12 @@ async def async_rebuild(
         def value(entity_id: str | None, h: datetime = hour) -> float | None:
             return by_entity.get(entity_id, {}).get(h) if entity_id else None
 
-        imp, exp = value(import_id), value(export_id)
-        fox = None if imp is None or exp is None else (imp, exp)
+        if net_mode:
+            net = value(net_id)
+            fox = None if net is None else (net,)
+        else:
+            imp, exp = value(import_id), value(export_id)
+            fox = None if imp is None or exp is None else (imp, exp)
         if fox is None:
             gaps += 1
         consumers = {slug: value(eid) for slug, eid in consumer_ids.items()}
