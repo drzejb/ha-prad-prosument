@@ -382,3 +382,11 @@ def test_apply_correction_changes_inflows_without_log_entry():
     with pytest.raises(ValueError):
         e._apply_correction(D("-7"), "2026-12")
     assert e.storage_kwh() == D("6")
+
+
+def test_consumer_only_bucket_without_pv_is_marked_pv_brak():
+    e = Engine(State(), {"sauna": "sensor.test_sauna"}, has_pv=False)
+    e.state.refs["sauna"] = TrackerRef(dt(2026, 11, 23, 10), (5.0,))
+    e.on_tick(dt(2026, 11, 23, 11, 0, 10), None, None, {"sauna": 6.0}, LIM, T)
+    assert e.state.months["2026-11"].consumers["sauna"] == pytest.approx(1.0)
+    assert e.state.months["2026-11"].pv_brak is True and e.state.days["2026-11-23"].pv_brak is True
