@@ -2,25 +2,63 @@
   "config": {
     "step": {
       "user": {
-        "title": "Prad - prosumer",
-        "description": "Select the energy sensors the integration reads.",
+        "title": "Prad - meters",
+        "description": "Select the energy meters. Either two cumulative meters (import and export) or one net meter that rises on import and falls on export. PV and temperature are optional.",
         "data": {
-          "import_entity": "Grid import energy sensor",
-          "export_entity": "Grid export energy sensor",
-          "pv_entity": "PV production energy sensor",
-          "temperature_entity": "Outdoor temperature sensor"
+          "tryb_sieci": "Grid meter",
+          "import_entity": "Energy imported from the grid",
+          "export_entity": "Energy exported to the grid",
+          "net_entity": "Net meter",
+          "pv_entity": "PV production (optional)",
+          "temperature_entity": "Outdoor temperature (optional)"
+        }
+      },
+      "taryfa": {
+        "title": "Tariff and net-metering ratio",
+        "description": "Choose the tariff and the net-metering ratio. You will fill in the prices later in Configure → Price lists.",
+        "data": {
+          "rozklad": "Tariff and zone hours",
+          "opust": "Net-metering ratio",
+          "opust_inny": "Other ratio (0-1)"
+        }
+      },
+      "strefy": {
+        "title": "Own off-peak hours",
+        "description": "Full hours 0-23. A range may cross midnight (22 → 6). G12 hours differ between operators and years - enter them from your contract or tariff.",
+        "data": {
+          "tanie1_od": "Off-peak 1 - from hour",
+          "tanie1_do": "Off-peak 1 - to hour",
+          "tanie2_od": "Off-peak 2 - from hour",
+          "tanie2_do": "Off-peak 2 - to hour",
+          "tanie3_od": "Off-peak 3 - from hour",
+          "tanie3_do": "Off-peak 3 - to hour",
+          "weekend": "Saturday and Sunday",
+          "swieta": "Public holidays"
         }
       }
     },
+    "error": {
+      "grid_required_dwa": "Select both the import and the export energy meters.",
+      "grid_required_netto": "Select the net meter.",
+      "not_energy": "Select an energy meter (kWh)",
+      "net_state_class": "The net meter must have state_class: total (total_increasing treats a decrease as a reset).",
+      "ratio_required": "Enter the ratio.",
+      "zones_invalid": "{blad}"
+    },
     "abort": {
       "single_instance_allowed": "Only one Prad entry is allowed."
+    },
+    "create_entry": {
+      "default": "Fill in the prices in Configure → Price lists."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Consumers",
+        "title": "Prad - settings",
         "menu_options": {
+          "cenniki": "Price lists",
+          "instalacja": "Installation",
           "add_consumer": "Add consumer",
           "remove_consumer": "Remove consumer",
           "finish": "Finish"
@@ -38,10 +76,63 @@
         "data": {
           "remove": "Consumer"
         }
+      },
+      "instalacja": {
+        "title": "Installation",
+        "menu_options": {
+          "opust": "Net-metering ratio",
+          "liczniki": "Meters"
+        }
+      },
+      "liczniki": {
+        "title": "Meters",
+        "description": "Changing a meter does not erase history, storage or invoices. The hour of the change is not counted.",
+        "data": {
+          "tryb_sieci": "Grid meter",
+          "import_entity": "Energy imported from the grid",
+          "export_entity": "Energy exported to the grid",
+          "net_entity": "Net meter",
+          "pv_entity": "PV production (optional)",
+          "temperature_entity": "Outdoor temperature (optional)"
+        }
       }
     },
     "error": {
-      "invalid_name": "Name is empty or already used."
+      "invalid_name": "Name is empty or already used.",
+      "grid_required_dwa": "Select both the import and the export energy meters.",
+      "grid_required_netto": "Select the net meter.",
+      "not_energy": "Select an energy meter (kWh)",
+      "net_state_class": "The net meter must have state_class: total (total_increasing treats a decrease as a reset).",
+      "ratio_required": "Enter the ratio.",
+      "zones_invalid": "{blad}"
+    }
+  },
+  "selector": {
+    "tryb_sieci": {
+      "options": {
+        "dwa": "Two meters: import and export",
+        "netto": "One net meter"
+      }
+    },
+    "rozklad": {
+      "options": {
+        "tauron_g12w": "G12w - Tauron hours (13-15, 22-6, weekends and holidays off-peak)",
+        "g11": "G11 - one price all day",
+        "wlasne_g12": "G12 - own hours",
+        "wlasne_g12w": "G12w - own hours"
+      }
+    },
+    "weekend": {
+      "options": {
+        "tania": "Off-peak all day",
+        "robocze": "Same as working days"
+      }
+    },
+    "swieta": {
+      "options": {
+        "weekend": "Same as weekend",
+        "robocze": "Same as working days"
+      }
     }
   },
   "services": {

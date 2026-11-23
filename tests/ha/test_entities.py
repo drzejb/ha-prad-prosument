@@ -5,6 +5,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 from custom_components.prad.const import DOMAIN
 
 SENSORS = {
+    "tryb_sieci": "dwa",
     "import_entity": "sensor.test_import",
     "export_entity": "sensor.test_export",
     "pv_entity": "sensor.test_pv",
@@ -13,7 +14,7 @@ SENSORS = {
 
 
 async def _setup_entry(hass, options=None) -> MockConfigEntry:
-    entry = MockConfigEntry(domain=DOMAIN, data=SENSORS, options=options or {"consumers": []})
+    entry = MockConfigEntry(domain=DOMAIN, data=SENSORS, options=options or {"consumers": []}, version=1, minor_version=2)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
