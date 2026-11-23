@@ -3,15 +3,16 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field, fields
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from .settlement import Inflow
+from .tariff import PriceVersion
 from .tracker import TrackerRef
 from .zones import TZ, Zone
 
-SCHEMA = 1
+SCHEMA = 2
 
 
 def to_decimal(x: float) -> Decimal:
@@ -33,6 +34,7 @@ class Counters:
     consumers: dict[str, float] = field(default_factory=dict)
     missing_hours: dict[str, int] = field(default_factory=dict)
     missing_marks: list[str] = field(default_factory=list)
+    pv_brak: bool = False  # at least one hour counted without a configured PV meter
 
     def _import(self) -> float:
         return self.import_peak + self.import_offpeak
@@ -40,14 +42,24 @@ class Counters:
     def _export(self) -> float:
         return self.export_peak + self.export_offpeak
 
-    def house(self) -> float:
+    def house(self) -> float | None:
+        if self.pv_brak:
+            return None
         return max(0.0, self.pv + self._import() - self._export())
 
-    def self_consumption(self) -> float:
+    def self_consumption(self) -> float | None:
+        if self.pv_brak:
+            return None
         return max(0.0, self.pv - self._export())
 
-    def rest(self) -> float:
-        return max(0.0, self.house() - sum(self.consumers.values()))
+    def rest(self) -> float | None:
+        house = self.house()
+        if house is None:
+            return None
+        return max(0.0, house - sum(self.consumers.values()))
+
+    def pv_value(self) -> float | None:
+        return None if self.pv_brak else self.pv
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +71,7 @@ class Counters:
             "consumers": dict(self.consumers),
             "missing_hours": dict(self.missing_hours),
             "missing_marks": list(self.missing_marks),
+            "pv_brak": self.pv_brak,
         }
 
     @classmethod
@@ -72,6 +85,75 @@ class Counters:
             consumers={k: float(v) for k, v in d.get("consumers", {}).items()},
             missing_hours={k: int(v) for k, v in d.get("missing_hours", {}).items()},
             missing_marks=list(d.get("missing_marks", [])),
+            pv_brak=bool(d.get("pv_brak", False)),
+        )
+
+
+def _zones_to_dict(values: dict[Zone, Decimal]) -> dict[str, str]:
+    return {"droga": str(values[Zone.PEAK]), "tania": str(values[Zone.OFFPEAK])}
+
+
+def _zones_from_dict(d: dict[str, Any]) -> dict[Zone, Decimal]:
+    return {Zone.PEAK: Decimal(str(d["droga"])), Zone.OFFPEAK: Decimal(str(d["tania"]))}
+
+
+@dataclass
+class PriceSegment:
+    od: date  # first day, inclusive
+    do: date  # last day, inclusive
+    cennik: PriceVersion
+    pobor: dict[Zone, Decimal]
+    oddanie: dict[Zone, Decimal]
+    do_zaplaty: dict[Zone, Decimal] | None = None  # only in history
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "od": self.od.isoformat(),
+            "do": self.do.isoformat(),
+            "cennik": self.cennik.to_dict(),
+            "pobor": _zones_to_dict(self.pobor),
+            "oddanie": _zones_to_dict(self.oddanie),
+        }
+        if self.do_zaplaty is not None:
+            out["do_zaplaty"] = _zones_to_dict(self.do_zaplaty)
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> PriceSegment:
+        return cls(
+            date.fromisoformat(d["od"]),
+            date.fromisoformat(d["do"]),
+            PriceVersion.from_dict(d["cennik"]),
+            _zones_from_dict(d["pobor"]),
+            _zones_from_dict(d["oddanie"]),
+            _zones_from_dict(d["do_zaplaty"]) if d.get("do_zaplaty") is not None else None,
+        )
+
+
+@dataclass
+class RatioSegment:
+    od: date
+    do: date
+    wspolczynnik: Decimal
+    oddanie: dict[Zone, Decimal] | None = None  # only in PendingClose
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "od": self.od.isoformat(),
+            "do": self.do.isoformat(),
+            "wspolczynnik": str(self.wspolczynnik),
+        }
+        if self.oddanie is not None:
+            out["oddanie"] = _zones_to_dict(self.oddanie)
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> RatioSegment:
+        return cls(
+            date.fromisoformat(d["od"]),
+            date.fromisoformat(d["do"]),
+            Decimal(str(d["wspolczynnik"])),
+            _zones_from_dict(d["oddanie"]) if d.get("oddanie") is not None else None,
         )
 
 
@@ -79,14 +161,16 @@ class Counters:
 class PendingClose:
     month: str
     counters: Counters
-    tariff: dict[str, str]
+    segmenty_cen: list[PriceSegment]
+    segmenty_opustu: list[RatioSegment]
     storage_before_cross: bool
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "month": self.month,
             "counters": self.counters.to_dict(),
-            "tariff": dict(self.tariff),
+            "segmenty_cen": [s.to_dict() for s in self.segmenty_cen],
+            "segmenty_opustu": [s.to_dict() for s in self.segmenty_opustu],
             "storage_before_cross": self.storage_before_cross,
         }
 
@@ -95,7 +179,8 @@ class PendingClose:
         return cls(
             d["month"],
             Counters.from_dict(d["counters"]),
-            {k: str(v) for k, v in d["tariff"].items()},
+            [PriceSegment.from_dict(x) for x in d["segmenty_cen"]],
+            [RatioSegment.from_dict(x) for x in d["segmenty_opustu"]],
             bool(d["storage_before_cross"]),
         )
 
@@ -126,10 +211,10 @@ class HistoryRow:
     oplaty_stale: Decimal
     koszt_netto: Decimal
     koszt_razem: Decimal
-    zuzycie_domu: float
-    produkcja_pv: float
-    autokonsumpcja: float
-    reszta: float
+    zuzycie_domu: float | None
+    produkcja_pv: float | None
+    autokonsumpcja: float | None
+    reszta: float | None
     temp_srednia: float | None
     stopniodni: float | None
     naslonecznienie_mj: float | None
@@ -139,8 +224,9 @@ class HistoryRow:
     invoice: Decimal | None = None
     csv_written: bool = False
     # Frozen inputs of the close, kept so that a rebuild does not re-price the month.
-    tariff: dict[str, str] | None = None
     storage_before_cross: bool | None = None
+    segmenty: list[PriceSegment] | None = None
+    segmenty_opustu: list[RatioSegment] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -148,6 +234,8 @@ class HistoryRow:
             value = getattr(self, f.name)
             if f.name in _DECIMAL_FIELDS or (f.name == "invoice" and value is not None):
                 value = str(value)
+            elif f.name in ("segmenty", "segmenty_opustu"):
+                value = None if value is None else [x.to_dict() for x in value]
             elif isinstance(value, dict):
                 value = dict(value)
             out[f.name] = value
@@ -156,8 +244,10 @@ class HistoryRow:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> HistoryRow:
         values = dict(d)
-        if values.get("tariff") is not None:
-            values["tariff"] = {k: str(v) for k, v in values["tariff"].items()}
+        if values.get("segmenty") is not None:
+            values["segmenty"] = [PriceSegment.from_dict(x) for x in values["segmenty"]]
+        if values.get("segmenty_opustu") is not None:
+            values["segmenty_opustu"] = [RatioSegment.from_dict(x) for x in values["segmenty_opustu"]]
         for name in _DECIMAL_FIELDS:
             values[name] = Decimal(str(values[name]))
         if values.get("invoice") is not None:
@@ -193,6 +283,9 @@ class State:
     last_tick: datetime | None = None
     # Pre-rebuild inflows kept so that repeating prad.inicjuj with the same start gives the same result.
     rebuild_base: dict | None = None  # {"od": "YYYY-MM-DD", "inflows": [inflow dicts]}
+    # Signature of every configured source (meter entities, grid mode); a change drops its reference.
+    zrodla: dict[str, str] = field(default_factory=dict)
+    zmiana_licznika: str | None = None  # ISO date of the last change of meter set (fox / pv)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -209,6 +302,8 @@ class State:
             "weather": {k: dict(v) for k, v in self.weather.items()},
             "last_tick": self.last_tick.isoformat() if self.last_tick else None,
             "rebuild_base": copy.deepcopy(self.rebuild_base),
+            "zrodla": dict(self.zrodla),
+            "zmiana_licznika": self.zmiana_licznika,
         }
 
     @classmethod
@@ -233,4 +328,6 @@ class State:
             weather={k: dict(v) for k, v in d.get("weather", {}).items()},
             last_tick=_dt(last_tick) if last_tick else None,
             rebuild_base=copy.deepcopy(d.get("rebuild_base")),
+            zrodla={k: str(v) for k, v in d.get("zrodla", {}).items()},
+            zmiana_licznika=d.get("zmiana_licznika"),
         )
