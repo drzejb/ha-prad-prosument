@@ -8,6 +8,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.prad.const import DOMAIN
+from custom_components.prad.logic.tariff import PriceListError
 from test_entities import SENSORS, _setup_entry, _tick_at
 
 PRICES = {
@@ -83,7 +84,19 @@ async def test_options_price_validations(hass, freezer):
     assert res["step_id"] == "cennik_ceny" and "energia_tania" not in res["data_schema"].schema
     g11 = {k: v for k, v in PRICES.items() if k not in ("energia_tania", "dystrybucja_tania")}
     res = await hass.config_entries.options.async_configure(fid, g11)
-    assert res["errors"] == {"base": "zone_change_not_first"} and len(entry.runtime_data.prices) == 1
+    assert res["step_id"] == "cennik_dane" and res["errors"] == {"base": "zone_change_not_first"}
+    assert len(entry.runtime_data.prices) == 1
+
+
+async def test_options_duplicate_date_returns_to_dane_step(hass, freezer):
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = await _setup_entry(hass)
+    fid, _ = await _open(hass, entry, "cenniki", "cennik_add")
+    await hass.config_entries.options.async_configure(fid, {"od": "2026-12-15", "nazwa": "Nowe", "rozklad": "tauron_g12w", "force": False})
+    err = PriceListError("duplicate_date", "x")  # race: the date appeared between the two steps
+    with patch.object(type(entry.runtime_data), "async_edit_prices", side_effect=err):
+        res = await hass.config_entries.options.async_configure(fid, PRICES)
+    assert res["step_id"] == "cennik_dane" and res["errors"] == {"base": "duplicate_date"}
 
 async def test_options_zone_change_of_counted_days_needs_force(hass, freezer):
     freezer.move_to("2026-11-23 09:30:00+01:00")
@@ -191,3 +204,21 @@ async def test_options_prices_abort_when_not_loaded(hass, freezer):
     assert await hass.config_entries.async_unload(entry.entry_id)
     result = await hass.config_entries.options.async_configure(fid, {"next_step_id": "cenniki"})
     assert result["type"] is FlowResultType.ABORT and result["reason"] == "not_loaded"
+
+
+async def test_options_edit_own_hours_prefills_stored_weekend(hass, freezer):
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = await _setup_entry(hass)
+    fid, _ = await _open(hass, entry, "cenniki", "cennik_add")
+    await hass.config_entries.options.async_configure(fid, {"od": "2026-12-01", "nazwa": "Wlasne", "rozklad": "wlasne_g12", "force": False})
+    zones = {"tanie1_od": 22, "tanie1_do": 6, "weekend": "tania", "swieta": "robocze"}
+    res = await hass.config_entries.options.async_configure(fid, zones)
+    assert res["step_id"] == "cennik_ceny"
+    res = await hass.config_entries.options.async_configure(fid, PRICES)
+    assert res["type"] is FlowResultType.CREATE_ENTRY
+    fid, _ = await _open(hass, entry, "cenniki", "cennik_edit")
+    await hass.config_entries.options.async_configure(fid, {"wersja": "2026-12-01"})
+    res = await hass.config_entries.options.async_configure(fid, {"od": "2026-12-01", "nazwa": "Wlasne", "rozklad": "wlasne_g12", "force": False})
+    assert res["step_id"] == "cennik_strefy"
+    defaults = {str(k): k.default() for k in res["data_schema"].schema if k in ("weekend", "swieta")}
+    assert defaults == {"weekend": "tania", "swieta": "robocze"}  # not the G12 layout defaults (robocze / weekend)

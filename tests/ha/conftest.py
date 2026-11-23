@@ -30,3 +30,10 @@ def _open_meteo_mock(aioclient_mock):
         json={"daily": {"time": [], "shortwave_radiation_sum": []}},
     )
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_delay(monkeypatch):
+    """Weather retry must not sleep for real (frozen clocks would never end it)."""
+    monkeypatch.setattr("custom_components.prad.weather.RETRY_DELAY", 0)
+    yield

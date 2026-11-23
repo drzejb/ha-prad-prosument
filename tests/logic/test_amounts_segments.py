@@ -51,6 +51,15 @@ def test_split_proportional():
     assert split_proportional(D("5.5"), [D(0), D(0)]) == [D("5.5"), D("0")]
 
 
+def test_split_proportional_never_negative():
+    # rounding every share half-up gave 4 x 0.001 and a last part of -0.001
+    parts = split_proportional(D("0.003"), [D(1)] * 5)
+    assert parts == [D("0.001"), D("0.001"), D("0.001"), D("0"), D("0")]
+    assert all(p >= 0 for p in parts) and sum(parts) == D("0.003")
+    rest = split_proportional(D("1.0005"), [D(1), D(3)])  # sub-milli rest goes to the heavier segment
+    assert sum(rest) == D("1.0005") and all(p >= 0 for p in rest) and rest[1] > rest[0]
+
+
 def test_one_segment_equals_compute_amounts():
     c, b = {P: D("195"), O: D("280")}, {P: D("0"), O: D("2")}
     assert compute_amounts_segments([SegmentAmounts(A, 30, c, b)], 30) == compute_amounts(c, b, DEFAULT_TARIFF)
