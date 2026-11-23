@@ -312,20 +312,29 @@ class PradCoordinator(DataUpdateCoordinator[None]):
                 current = entry
         return current
 
-    async def async_apply_prices(self, versions: list[PriceVersion], *, force: bool = False) -> None:
-        async with self.lock:
-            versions = sorted(versions, key=lambda v: v.od)
-            validate_prices(versions)
-            rng = self.engine.counted_range()
-            touched = rng is not None and zones_differ(self.prices, versions, *rng)
-            if touched and not force:
-                raise PriceListError(
-                    "counted_days",
-                    "Strefy tych dni są już policzone – dodaj nowy cennik od pierwszego dnia następnego "
-                    "miesiąca albo zaznacz »Zmieniam mimo policzonych dni« i potem uruchom prad.inicjuj",
-                )
-            self.prices = versions
-            await self.async_save()
+    async def _apply_prices_locked(self, versions: list[PriceVersion], force: bool) -> bool:
+        """Validate, store and save a price list; the caller holds self.lock. Returns `touched`."""
+        versions = sorted(versions, key=lambda v: v.od)
+        validate_prices(versions)
+        rng = self.engine.counted_range()
+        touched = rng is not None and zones_differ(self.prices, versions, *rng)
+        if touched and not force:
+            raise PriceListError(
+                "counted_days",
+                "Strefy tych dni są już policzone – dodaj nowy cennik od pierwszego dnia następnego "
+                "miesiąca albo zaznacz »Zmieniam mimo policzonych dni« i potem uruchom prad.inicjuj",
+            )
+        self.prices = versions
+        await self.async_save()
+        return touched
+
+    async def _apply_opust_locked(self, entries: list[OpustEntry]) -> None:
+        entries = sorted(entries, key=lambda e: e.od)
+        validate_opust(entries)
+        self.opust = entries
+        await self.async_save()
+
+    def _after_prices(self, touched: bool, force: bool) -> None:
         self.async_update_listeners()
         if touched and force:
             persistent_notification.async_create(
@@ -335,35 +344,41 @@ class PradCoordinator(DataUpdateCoordinator[None]):
                 notification_id=NOTIFICATION_REBUILD,
             )
 
+    async def async_apply_prices(self, versions: list[PriceVersion], *, force: bool = False) -> None:
+        async with self.lock:
+            touched = await self._apply_prices_locked(versions, force)
+        self._after_prices(touched, force)
+
     async def async_apply_opust(self, entries: list[OpustEntry]) -> None:
         async with self.lock:
-            entries = sorted(entries, key=lambda e: e.od)
-            validate_opust(entries)
-            self.opust = entries
-            await self.async_save()
+            await self._apply_opust_locked(entries)
         self.async_update_listeners()
 
     async def async_set_setting(self, key: str, value: Any) -> None:
         if key in PRICE_KEYS or key == KEY_PRICE_NAME:
-            current = price_at(self.prices, self.today())
             if key == KEY_PRICE_NAME:
-                new = replace(current, nazwa=str(value).strip())
+                changes: dict[str, Any] = {"nazwa": str(value).strip()}
             else:
                 try:
-                    number = Decimal(str(value))
+                    changes = {PRICE_KEYS[key]: Decimal(str(value))}
                 except InvalidOperation as err:
                     raise ValueError(f"{key}: invalid number") from err
-                new = replace(current, **{PRICE_KEYS[key]: number})
-            await self.async_apply_prices(with_version(self.prices, current.od, new))
+            async with self.lock:  # read-modify-write under the lock: concurrent edits must not be lost
+                current = price_at(self.prices, self.today())
+                new = replace(current, **changes)
+                touched = await self._apply_prices_locked(with_version(self.prices, current.od, new), False)
+            self._after_prices(touched, False)
             return
         if key == KEY_RATIO:
-            current_entry = self._opust_today()
             try:
                 ratio = Decimal(str(value))
             except InvalidOperation as err:
                 raise ValueError(f"{key}: invalid number") from err
-            new_entry = OpustEntry(current_entry.od, ratio)
-            await self.async_apply_opust(with_opust(self.opust, current_entry.od, new_entry))
+            async with self.lock:
+                current_entry = self._opust_today()
+                new_entry = OpustEntry(current_entry.od, ratio)
+                await self._apply_opust_locked(with_opust(self.opust, current_entry.od, new_entry))
+            self.async_update_listeners()
             return
         if key not in SETTING_DEFAULTS:
             raise ValueError(f"Unknown setting {key}")
