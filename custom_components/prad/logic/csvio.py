@@ -22,7 +22,7 @@ INVOICES_HEADER: tuple[str, ...] = ("miesiac", "kwota", "data_wpisu")
 _KWH = Decimal("0.001")
 _PLN = Decimal("0.01")
 _ONE = Decimal("0.1")
-_FOX = "fox"  # consumers_missing also carries Fox's missing hours; not a consumer
+_FOX = "fox"  # consumers_missing also carries the grid meter's missing hours; not a consumer
 
 
 def _fmt(value: Decimal | float | None, step: Decimal) -> str:
