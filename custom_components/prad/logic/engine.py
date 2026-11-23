@@ -18,7 +18,7 @@ from .state import Counters, HistoryRow, PendingClose, State, to_decimal
 from .tariff import Tariff
 from .tracker import HourDelta, advance, floor_hour
 from .zones import (
-    TZ, Zone, add_months, day_key, days_in_month, month_key, month_start, next_month_key, zone_at,
+    TAURON_G12W, TZ, Zone, add_months, day_key, days_in_month, month_key, month_start, next_month_key, zone_at,
 )
 
 _ZERO = Decimal(0)
@@ -54,7 +54,7 @@ def _order(i: Inflow) -> tuple[str, int]:
 
 def _add_fox(c: Counters, h: HourDelta) -> None:
     net = h.deltas[0] - h.deltas[1]
-    peak = zone_at(h.start) is Zone.PEAK
+    peak = zone_at(h.start, TAURON_G12W) is Zone.PEAK
     if net > 0:
         attr = "import_peak" if peak else "import_offpeak"
         setattr(c, attr, getattr(c, attr) + net)
