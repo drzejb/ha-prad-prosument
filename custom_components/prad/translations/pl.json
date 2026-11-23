@@ -212,6 +212,7 @@
       "last_version": "Nie można usunąć ostatniej pozycji.",
       "unknown_version": "Nie ma takiej pozycji.",
       "name_required": "Podaj nazwę cennika.",
+      "name_too_long": "Nazwa cennika może mieć najwyżej 100 znaków.",
       "price_invalid": "Sprawdź ceny: nie mogą być ujemne, VAT 0–100.",
       "ratio_invalid": "Współczynnik opustu musi być między 0 a 1."
     },

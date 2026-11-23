@@ -100,3 +100,13 @@ def test_broken_history_row_raises_and_leaves_input():
     del old["state"]["history"][0]["pobor_droga"]
     with pytest.raises(KeyError):
         migrate_v1_to_v2(old, TODAY)
+
+
+def test_whitespace_only_labels_fall_back_to_default_name():
+    old = v02_payload()
+    old["settings"]["wersja_cennika"] = "   "
+    old["state"]["history"][0]["tariff"]["version"] = "  "
+    new = migrate_v1_to_v2(old, TODAY)
+    state = State.from_dict(new["state"])
+    assert PriceVersion.from_dict(new["settings"]["cenniki"][0]).nazwa == "Cennik"
+    assert state.history[0].segmenty[0].cennik.nazwa == "Cennik"

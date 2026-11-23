@@ -39,11 +39,16 @@ def _ref_time(coordinator: PradCoordinator) -> datetime | None:
     return None if last is None else last - timedelta(hours=1)
 
 
+def _empty(coordinator: PradCoordinator) -> Counters:
+    """Fallback counters of a period without a bucket; without a PV meter PV-derived values stay unknown."""
+    return Counters(pv_brak=not coordinator.has_pv())
+
+
 def _month_view(coordinator: PradCoordinator, now: datetime) -> tuple[Counters, datetime]:
     """Counters and start of the month bucket of the last settled hour."""
     ref = _ref_time(coordinator)
     if ref is None:
-        return Counters(), month_start(month_key(now))
+        return _empty(coordinator), month_start(month_key(now))
     key = month_key(ref)
     state = coordinator.engine.state
     if key in state.months:
@@ -54,9 +59,9 @@ def _month_view(coordinator: PradCoordinator, now: datetime) -> tuple[Counters, 
         # The bucket month is already closed (no new settled hour yet): follow the calendar
         # month so that value and last_reset change together.
         current = month_key(now)
-        return state.months.get(current, Counters()), month_start(current)
+        return state.months.get(current) or _empty(coordinator), month_start(current)
     else:
-        counters = Counters()
+        counters = _empty(coordinator)
     return counters, month_start(key)
 
 
@@ -64,9 +69,9 @@ def _day_view(coordinator: PradCoordinator, now: datetime) -> tuple[Counters, da
     """Counters and midnight of the day bucket of the last settled hour."""
     ref = _ref_time(coordinator)
     if ref is None:
-        return Counters(), _midnight(day_key(now))
+        return _empty(coordinator), _midnight(day_key(now))
     key = day_key(ref)
-    return coordinator.engine.state.days.get(key, Counters()), _midnight(key)
+    return coordinator.engine.state.days.get(key, _empty(coordinator)), _midnight(key)
 
 
 def _midnight(key: str) -> datetime:

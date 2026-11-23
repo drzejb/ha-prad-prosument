@@ -35,7 +35,7 @@ from .const import (
     PRICE_KEYS,
     RESERVED_SLUGS,
 )
-from .logic.tariff import OpustEntry, PriceListError, PriceVersion, price_at
+from .logic.tariff import MAX_NAME_LENGTH, OpustEntry, PriceListError, PriceVersion, price_at
 from .logic.zones import G11, TAURON_G12W, ZoneSchedule, make_schedule
 
 if TYPE_CHECKING:
@@ -451,6 +451,8 @@ class PradOptionsFlow(OptionsFlow):
                 errors["od"] = "duplicate_date"
             if not nazwa:
                 errors["nazwa"] = "name_required"
+            elif len(nazwa) > MAX_NAME_LENGTH:
+                errors["nazwa"] = "name_too_long"
             if not errors:
                 self._od = od
                 self._nazwa = nazwa

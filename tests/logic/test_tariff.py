@@ -111,3 +111,9 @@ def test_opust_range_and_defaults():
     e = empty_price(date(2026, 11, 1), G11)
     assert e.taryfa == "G11" and e.energy_peak == D("0") and e.vat_percent == D("23") and e.nazwa == EMPTY_PRICE_NAME
     assert DEFAULT_PRICING.prices[0].energy_peak == DEFAULT_TARIFF.energy_peak and DEFAULT_PRICING.ratio_at(date(2030, 1, 1)) == D("0.8")
+
+
+def test_price_name_longer_than_100_characters_is_rejected():
+    assert replace(A, nazwa="x" * 100).nazwa == "x" * 100
+    with pytest.raises(ValueError, match="najwyżej 100 znaków"):
+        replace(A, nazwa="x" * 101)

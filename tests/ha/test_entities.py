@@ -362,6 +362,19 @@ async def test_without_pv_energy_sensors_are_unknown(hass, freezer):
     day = hass.states.get("sensor.prad_dni").attributes["dni"][-1]
     assert day["pv"] is None and day["autokonsumpcja"] is None
 
+async def test_without_pv_and_without_tick_pv_views_are_unknown(hass, freezer):
+    freezer.move_to("2026-11-23 09:30:00+01:00")
+    entry = MockConfigEntry(domain=DOMAIN, data={"tryb_sieci": "dwa", "import_entity": "sensor.test_import",
+                                                 "export_entity": "sensor.test_export"}, version=1, minor_version=2)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    for eid in ("sensor.prad_mc_produkcja_pv", "sensor.prad_mc_zuzycie_domu", "sensor.prad_mc_autokonsumpcja",
+                "sensor.prad_mc_reszta", "sensor.prad_dzis_produkcja_pv", "sensor.prad_dzis_zuzycie_domu"):
+        state = hass.states.get(eid)
+        assert state is not None and state.state == "unknown", eid
+
+
 async def test_fuse_name_has_no_owner_hardware(hass, freezer):
     freezer.move_to("2026-11-23 09:30:00+01:00")
     await _setup_entry(hass)

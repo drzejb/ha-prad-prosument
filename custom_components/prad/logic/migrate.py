@@ -41,7 +41,7 @@ def _text(value: Any) -> str:
 
 def _version(od: str, name: Any, fields: dict[str, str]) -> dict[str, Any]:
     return {
-        "od": od, "nazwa": _text(name) if name not in (None, "") else _DEFAULT_NAME,
+        "od": od, "nazwa": _text(name).strip() if name is not None and _text(name).strip() else _DEFAULT_NAME,
         "taryfa": "G12w", "strefy": TAURON_G12W.to_dict(), **fields,
     }
 
