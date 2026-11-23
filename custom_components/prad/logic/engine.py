@@ -199,6 +199,10 @@ class Engine:
         dropped = 0
         for hour in result.hours:
             month_c, day_c = self._buckets(hour.start, now)
+            if not self.has_pv:  # absence of PV is recorded per bucket, whichever tracker created it
+                for bucket in (month_c, day_c):
+                    if bucket is not None:
+                        bucket.pv_brak = True
             if month_c is None:
                 dropped += 1
             else:

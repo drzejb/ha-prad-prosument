@@ -156,6 +156,19 @@ async def test_inicjuj_keeps_older_history_and_inflows(hass, freezer, tmp_path, 
     assert "2026-11" in caplog.text
 
 
+async def test_inicjuj_with_row_without_frozen_ratios_falls_back_to_current(hass, freezer, tmp_path, aioclient_mock):
+    freezer.move_to(NOW)
+    _mock_meteo(aioclient_mock, status=500)
+    entry = await _setup_entry(hass, tmp_path)
+    state = entry.runtime_data.engine.state
+    state.history.append(_history_row("2026-09"))
+    state.history[0].segmenty_opustu = []
+    await _import_stats(hass, "sensor.test_import", 0.5)
+    await _import_stats(hass, "sensor.test_export", 0.0)
+    await _call(hass, "inicjuj", {"od": "2026-11-23", "poczatek_magazynu": "2026-09", "potwierdz": True})
+    assert entry.runtime_data.engine.state.storage_start == "2026-09"
+
+
 async def test_open_meteo_failure_is_tolerated(hass, aioclient_mock, caplog):
     _mock_meteo(aioclient_mock, status=500)
     assert await async_fetch_radiation(hass, 5) == {}

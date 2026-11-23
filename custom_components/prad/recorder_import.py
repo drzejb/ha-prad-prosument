@@ -128,7 +128,7 @@ async def async_rebuild(
     engine.month_pricing = {
         m: Pricing(
             tuple(s.cennik for s in row.segmenty),
-            tuple(OpustEntry(r.od, r.wspolczynnik) for r in (row.segmenty_opustu or [])),
+            tuple(OpustEntry(r.od, r.wspolczynnik) for r in (row.segmenty_opustu or [])) or coordinator.pricing().opust,
         )
         for m, row in prior.items()
     }
