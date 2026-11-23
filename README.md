@@ -1,6 +1,6 @@
 # Prąd – prosument (Home Assistant)
 
-Integracja Home Assistant dla prosumenta rozliczanego w starym systemie net-metering (opust). Z przyrostów liczników energii liczy godzina po godzinie bilans w strefach taryfy G12w, rozlicza magazyn energii (nadwyżki ważne 12 miesięcy), szacuje koszt bieżącego miesiąca i prognozę, a po zamknięciu miesiąca zapisuje jego rozliczenie do historii i plików CSV. Dodaje też dane do porównań: temperaturę, stopniodni i nasłonecznienie.
+Integracja Home Assistant dla prosumenta rozliczanego w starym systemie net-metering (opust), miesięcznie, z licznikiem zdalnym. Obsługuje taryfy G11, G12 i G12w oraz cenniki obowiązujące od wybranej daty. Z przyrostów liczników energii liczy godzina po godzinie bilans w strefach taryfy, rozlicza magazyn energii (nadwyżki ważne 12 miesięcy), szacuje koszt bieżącego miesiąca i prognozę, a po zamknięciu miesiąca zapisuje jego rozliczenie do historii i plików CSV. Dodaje też dane do porównań: temperaturę, stopniodni i nasłonecznienie.
 
 Wymaga Home Assistant 2026.10 lub nowszego oraz włączonego recordera.
 
@@ -14,31 +14,68 @@ Wymaga Home Assistant 2026.10 lub nowszego oraz włączonego recordera.
 
 ## Konfiguracja
 
-Przy dodawaniu integracji wskazujesz cztery encje (wszystkie `sensor`):
+Dodawanie integracji ma dwa kroki.
+
+1. **Liczniki** (wszystkie to encje `sensor`):
 
 | Pole | Co wskazać |
 |---|---|
-| Import | licznik energii pobranej z sieci (kWh lub Wh, narastający) |
-| Eksport | licznik energii oddanej do sieci (kWh lub Wh, narastający) |
-| PV | licznik produkcji falownika (kWh, narastający) |
-| Temperatura | czujnik temperatury na zewnątrz |
+| Licznik sieci | dwa liczniki (pobrana i oddana energia) albo jeden licznik netto |
+| Energia pobrana / oddana | liczniki narastające, kWh, Wh lub MWh |
+| Licznik netto | zamiast dwóch powyższych; musi mieć `state_class: total` |
+| PV (opcjonalnie) | licznik produkcji falownika |
+| Temperatura (opcjonalnie) | czujnik temperatury na zewnątrz |
+
+2. **Taryfa i opust**: wybierz taryfę (G12w Tauron, G11 albo własne godziny stref) i współczynnik opustu.
+
+Potem uzupełnij ceny: Ustawienia → Urządzenia i usługi → Prąd – prosument → **Konfiguruj** → **Cenniki**. Przy G12w Tauron wpisany jest domyślny cennik, ale to **przykład – sprawdź go z fakturą**. Przy innych taryfach ceny są zerami do uzupełnienia.
 
 Licznik, który chwilowo nie ma danych, powinien mieć stan `unavailable` (np. przez `availability` w szablonie), a nie `0`. Integracja rozkłada wtedy przerwę na brakujące godziny zamiast liczyć skok.
 
-**Odbiorniki** (opcjonalnie): Ustawienia → Urządzenia i usługi → Prąd – prosument → **Konfiguruj** → „Dodaj odbiornik” (nazwa + licznik energii). Każdy odbiornik dostaje encję `sensor.prad_mc_odb_<nazwa>`. Nazwy `fox` i `pv` są zarezerwowane.
+**Odbiorniki** (opcjonalnie): Konfiguruj → „Dodaj odbiornik” (nazwa + licznik energii). Każdy odbiornik dostaje encję `sensor.prad_mc_odb_<nazwa>`. Nazwy `fox` i `pv` są zarezerwowane.
 
-**Cennik i ustawienia** to encje `number.prad_*`, `text.prad_wersja_cennika` i `switch.prad_magazyn_przed_przeniesieniem` na urządzeniu „Prąd”. Domyślnie wpisany jest przykładowy cennik G12w – sprawdź go ze swoją fakturą.
+**Cennik i ustawienia** to encje `number.prad_*`, `text.prad_wersja_cennika` i `switch.prad_magazyn_przed_przeniesieniem` na urządzeniu „Prąd”. Pola `number.prad_*` poprawiają cennik obowiązujący dziś (patrz „Cenniki od daty”).
+
+## Cenniki od daty
+
+Konfiguruj → **Cenniki**: dodaj cennik od daty, popraw go albo usuń. Cena zmienia się o północy wskazanego dnia. Zużycie każdego dnia liczone jest po cenie z tego dnia, a opłaty stałe – proporcjonalnie do liczby dni.
+
+**Uwaga:** nowe ceny od przyszłej daty dodawaj w „Cenniki”, nie przez pola `number.prad_*`. Te pola poprawiają cennik obowiązujący dziś i przecenią bieżący miesiąc. Poprawka cennika zmienia tylko miesiąc bieżący i prognozę; miesiące zamknięte i oczekujące na zamknięcie mają własną kopię cennika.
+
+## Współczynnik opustu
+
+Konfiguruj → Instalacja → **Współczynnik opustu**. Współczynnik można podać z datą, np. po rozbudowie instalacji z 0,8 na 0,7. Uwaga: rozbudowa może zmienić także sposób rozliczenia części mocy. Integracja tego nie modeluje – sprawdź w umowie.
+
+## Taryfy i strefy
+
+- **G12w Tauron:** tania strefa 13–15 i 22–6, a także weekendy i święta.
+- **G11:** jedna strefa całodobowa.
+- **Własne godziny:** do 3 przedziałów taniej strefy, osobno decydujesz o weekendach i świętach.
+
+Godziny G12 różnią się między operatorami i latami – wpisz je z umowy/taryfy jako własne.
+
+Zmiana taryfy albo godzin stref jest możliwa tylko od pierwszego dnia miesiąca. Zmiana stref dni już policzonych wymaga zaznaczenia pola „Zmieniam mimo policzonych dni”, a potem uruchomienia `prad.inicjuj`.
+
+## Liczniki (dwa / netto / z mocy)
+
+- **Dwa liczniki** narastające (pobór i oddanie) albo **jeden licznik netto** (`state_class: total`). Jednostki: kWh, Wh, MWh.
+- Gdy masz tylko czujnik mocy (W), zrób z niego licznik pomocnikiem Home Assistant „Całka (Riemann)”. Z mocy netto powstanie licznik netto.
+- PV i temperatura są opcjonalne. Bez PV nie ma produkcji, autokonsumpcji, zużycia domu i „reszty”. Bez czujnika temperatury średnia dobowa pochodzi z Open-Meteo.
+
+## Zmiana licznika a `prad.inicjuj`
+
+Licznik wymienisz w Konfiguruj → Instalacja → **Liczniki**. Historia, magazyn i faktury zostają; godzina zmiany nie jest liczona. `prad.inicjuj` z datą wcześniejszą niż zmiana licznika jest odrzucane. Dodanie albo usunięcie PV liczy się jak zmiana licznika (też blokuje `prad.inicjuj` z wcześniejszą datą).
 
 ## Jak to liczy
 
-- Godziny rozliczane są o pełnej godzinie (+10 s). Bilans godzinowy netto (pobór − oddanie) trafia do strefy drogiej albo taniej G12w (weekendy, święta i 24 grudnia – tania).
+- Godziny rozliczane są o pełnej godzinie (+10 s). Bilans godzinowy netto (pobór − oddanie) trafia do strefy drogiej albo taniej wybranej taryfy (przy G12w weekendy, święta i 24 grudnia – tania; przy G11 jedna strefa całodobowa).
 - Przy zamknięciu miesiąca (1. dnia o 01:00:30, z ponowieniem co godzinę, gdy brakuje danych) kWh w strefach są zaokrąglane do pełnych. Pobór pokrywa najpierw nadwyżka tej samej strefy z tego miesiąca, potem drugiej strefy, potem magazyn od najstarszych wpływów. Opust = oddanie × współczynnik (domyślnie 0,8).
 - VAT liczony jest od każdej pozycji, kwoty zaokrąglane do grosza.
 - Pogoda: średnia dobowa temperatura ze statystyk HA, nasłonecznienie z Open-Meteo.
 
 ## Usługi
 
-**`prad.inicjuj`** – przelicza historię ze statystyk godzinowych recordera (np. po instalacji albo po zmianie liczników).
+**`prad.inicjuj`** – przelicza historię ze statystyk godzinowych recordera (np. po instalacji).
 
 ```yaml
 action: prad.inicjuj
@@ -82,23 +119,32 @@ Gotowy pulpit jest w [`dashboards/prad.yaml`](dashboards/prad.yaml): dwie zakła
 
 ## Ważne zasady
 
-- **Nowe ceny wpisuj 1. dnia miesiąca albo później.** Zamykany miesiąc dostaje kopię cennika z chwili zamknięcia. Rzadki przypadek: gdy licznik nie odpowiada przez całą noc z 1. na 2., a cennik zmienisz w tym czasie, miesiąc zamknie się po nowych cenach.
-- **Zamknięty miesiąc zachowuje swój cennik** i ustawienie przełącznika magazynu, także po ponownym `prad.inicjuj`. Świadomie przeliczyć go po nowych cenach się nie da.
+- **Zamknięty miesiąc zachowuje swoje cenniki, współczynnik opustu i strefy** oraz ustawienie przełącznika magazynu, także po ponownym `prad.inicjuj`. Świadomie przeliczyć go po nowych cenach się nie da.
 - **Ponowne `prad.inicjuj` wywołuj zawsze z tym samym `od`.** Stan magazynu sprzed `od` jest zapamiętywany przy pierwszym przeliczeniu; jest dokładny, jeśli przed `od` nie było wpływów do magazynu.
 - **Pliki CSV są tylko dopisywane** (`<config>/prad/`). Po ponownym `prad.inicjuj` stare wiersze zostają, nowe są dopisywane bez duplikatów miesięcy.
 - Produkcja PV z godzin nocnych na przełomie miesiąca (≈ 0 kWh) dla już zamkniętego miesiąca jest pomijana.
 - Stan jest zapisywany w `.storage/prad`, a przed każdym `prad.inicjuj` – kopie w `.storage/prad_backup` i `.storage/prad_backup_prev`.
 - Prognoza w pierwszych dniach po instalacji (bez historii) może być zaniżona; nie wpływa na rozliczenie.
 
+## Co sprawdzić przy pierwszej fakturze ze zmianą ceny
+
+- **R1 – podział kWh do zapłaty między okresy** liczony jest proporcjonalnie do poboru. Faktura może rozliczać opust osobno w każdym okresie. Porównaj kWh z `segmenty` w atrybucie `miesiace` czujnika `sensor.prad_historia`.
+- **R5 – opłaty stałe** liczone są proporcjonalnie do dni, a VAT od każdej pozycji. Faktura może zaokrąglać inaczej.
+
+## Aktualizacja z v0.2 – brak powrotu
+
+Stan jest przenoszony przy pierwszym uruchomieniu v0.3. Kopia sprzed migracji leży w `.storage/prad_backup_v02`. Powrotu do v0.2 nie ma. Encja `number.prad_bezpiecznik_fox` zmienia `entity_id` na `number.prad_bezpiecznik_siec` (chyba że zmieniono go ręcznie).
+
 ## Ograniczenia
 
-- Taryfa G12w (strefy i dni wolne w Polsce), rozliczenie miesięczne, opust z jednym współczynnikiem.
+- Taryfy G11, G12 (jako własne godziny) i G12w; rozliczenie miesięczne w net-meteringu; licznik zdalny; opust ze współczynnikiem zmiennym w czasie.
+- Nie obsługuje: net-billingu, rozliczenia 6/12-miesięcznego, taryf C, cen godzinowych, stref zmiennych w roku (lato/zima) ani zmiany ceny w środku doby.
 - Jedna instalacja (jeden wpis integracji).
 
 ## Prywatność
 
-Integracja wysyła **położenie domu z ustawień Home Assistant** (szerokość i długość geograficzna) do Open-Meteo (`api.open-meteo.com` – ostatnie dni, `archive-api.open-meteo.com` – dni starsze), aby pobrać nasłonecznienie. Żadne inne dane nie są wysyłane. Repozytorium nie zawiera danych właściciela.
+Integracja wysyła **położenie domu z ustawień Home Assistant** (szerokość i długość geograficzna) do Open-Meteo (`api.open-meteo.com` – ostatnie dni, `archive-api.open-meteo.com` – dni starsze), po nasłonecznienie oraz – gdy nie wskażesz czujnika temperatury – średnią temperaturę. Żadne inne dane nie są wysyłane. Repozytorium nie zawiera danych właściciela.
 
 ## English summary
 
-Home Assistant custom integration for Polish net-metering prosumers (G12w tariff, monthly settlement). It settles meter increments hourly per time zone, runs the 12-month energy store, estimates the monthly bill and keeps a monthly history with CSV export, temperature, degree days and solar radiation. Install via HACS as a custom repository; a ready dashboard (ApexCharts Card) is in `dashboards/prad.yaml`. The integration sends the home location configured in Home Assistant to Open-Meteo for radiation data; no other data leaves your instance.
+Home Assistant custom integration for Polish net-metering prosumers (G11/G12/G12w, dated price lists, single net meter, monthly settlement). It settles meter increments hourly per time zone, runs the 12-month energy store, estimates the monthly bill and keeps a monthly history with CSV export, temperature, degree days and solar radiation. Install via HACS as a custom repository; a ready dashboard (ApexCharts Card) is in `dashboards/prad.yaml`. The integration sends the home location configured in Home Assistant to Open-Meteo for radiation data; no other data leaves your instance.

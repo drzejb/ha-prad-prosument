@@ -25,18 +25,32 @@ views:
             chart_type: donut
             series:
               - entity: sensor.prad_mc_koszt_droga
-                name: Strefa droga
+                name: Strefa droga / całodobowa
               - entity: sensor.prad_mc_koszt_tania
                 name: Strefa tania
               - entity: sensor.prad_mc_oplaty_stale
                 name: Opłaty stałe
           - type: markdown
             content: |-
+              {% set g11 = state_attr('sensor.prad_cennik', 'taryfa') == 'G11' -%}
               {% set droga = is_state('binary_sensor.prad_strefa_droga', 'on') -%}
               {% set zm = state_attr('binary_sensor.prad_strefa_droga', 'nastepna_zmiana') -%}
-              **Strefa teraz:** {{ 'droga' if droga else 'tania' }} ({{ states('sensor.prad_cena_teraz') }} zł/kWh){% if zm %}, zmiana o {{ as_timestamp(zm) | timestamp_custom('%H:%M') }}{% endif %}
+              **Strefa teraz:** {{ 'całodobowa' if g11 else ('droga' if droga else 'tania') }} ({{ states('sensor.prad_cena_teraz') }} zł/kWh){% if zm %}, zmiana o {{ as_timestamp(zm) | timestamp_custom('%H:%M') }}{% endif %}
 
               **Magazyn:** {{ states('sensor.prad_magazyn_kwh') }} kWh (w tym miesiącu +{{ state_attr('sensor.prad_magazyn_kwh', 'wplyw_mc') }} kWh)
+          - type: markdown
+            title: Cennik
+            content: |-
+              {% set c = 'sensor.prad_cennik' -%}
+              **{{ states(c) }}** – {{ state_attr(c, 'taryfa') }}, obowiązuje od {{ state_attr(c, 'od') }}, opust {{ state_attr(c, 'wspolczynnik_opustu') }}
+
+              {% if state_attr(c, 'nastepna_zmiana_cen') %}Następna zmiana cen: {{ state_attr(c, 'nastepna_zmiana_cen') }}. {% endif %}{% if state_attr(c, 'nastepna_zmiana_opustu') %}Następna zmiana opustu: {{ state_attr(c, 'nastepna_zmiana_opustu') }}.{% endif %}
+
+              | Od | Cennik | Taryfa |
+              |---|---|---|
+              {% for w in state_attr(c, 'wersje') or [] -%}
+              | {{ w.od }} | {{ w.nazwa }} | {{ w.taryfa }} |
+              {% endfor %}
           - type: custom:apexcharts-card
             header: { show: true, title: Dzień po dniu }
             graph_span: 31d
@@ -49,7 +63,7 @@ views:
                 decimals: 0
             series:
               - entity: sensor.prad_dni
-                name: Pobór droga
+                name: Pobór droga / całodobowa
                 type: column
                 yaxis_id: kwh
                 data_generator: |
@@ -65,7 +79,7 @@ views:
                 type: column
                 yaxis_id: kwh
                 data_generator: |
-                  return entity.attributes.dni.map(d => [new Date(d.dzien + 'T12:00:00').getTime(), d.autokonsumpcja]);
+                  return entity.attributes.dni.filter(d => d.autokonsumpcja !== null).map(d => [new Date(d.dzien + 'T12:00:00').getTime(), d.autokonsumpcja]);
               - entity: sensor.prad_dni
                 name: Temperatura
                 type: line
@@ -82,8 +96,10 @@ views:
               {% for s in states.sensor | selectattr('entity_id', 'search', '^sensor\.prad_mc_odb_') -%}
               | {{ s.name | replace('Prąd – ', '') | replace(' w tym miesiącu', '') }} | {{ s.state | float(0) | round(1) }} | {{ 'brak danych: ' ~ s.attributes.godziny_bez_danych ~ ' h' if s.attributes.godziny_bez_danych else '' }} |
               {% endfor -%}
-              | Reszta domu (w tym pompa) | {{ states('sensor.prad_mc_reszta') | float(0) | round(1) }} | |
+              {% if states('sensor.prad_mc_reszta') not in ('unknown', 'unavailable') -%}
+              | Reszta domu | {{ states('sensor.prad_mc_reszta') | float(0) | round(1) }} | |
               | **Zużycie domu** | **{{ states('sensor.prad_mc_zuzycie_domu') | float(0) | round(1) }}** | |
+              {%- endif %}
           - type: markdown
             title: Ostatnie miesiące
             content: |-
@@ -163,7 +179,7 @@ views:
                 type: column
                 float_precision: 2
                 data_generator: |
-                  return entity.attributes.miesiace.filter(r => r.stopniodni && r.stopniodni >= 10).map(r => [new Date(r.month + '-15T12:00:00').getTime(), r.zuzycie_domu / r.stopniodni]);
+                  return entity.attributes.miesiace.filter(r => r.stopniodni && r.stopniodni >= 10 && r.zuzycie_domu !== null).map(r => [new Date(r.month + '-15T12:00:00').getTime(), r.zuzycie_domu / r.stopniodni]);
           - type: entities
             title: Dwa miesiące obok siebie
             entities:
@@ -181,8 +197,8 @@ views:
               |---|---:|---:|
               | Pobór droga / tania (kWh) | {{ a.pobor_droga }} / {{ a.pobor_tania }} | {{ b.pobor_droga }} / {{ b.pobor_tania }} |
               | Oddanie droga / tania (kWh) | {{ a.oddanie_droga }} / {{ a.oddanie_tania }} | {{ b.oddanie_droga }} / {{ b.oddanie_tania }} |
-              | Produkcja PV (kWh) | {{ a.produkcja_pv | round(0) }} | {{ b.produkcja_pv | round(0) }} |
-              | Zużycie domu (kWh) | {{ a.zuzycie_domu | round(0) }} | {{ b.zuzycie_domu | round(0) }} |
+              | Produkcja PV (kWh) | {{ v(a.produkcja_pv) }} | {{ v(b.produkcja_pv) }} |
+              | Zużycie domu (kWh) | {{ v(a.zuzycie_domu) }} | {{ v(b.zuzycie_domu) }} |
               | Koszt (zł) | {{ a.koszt_razem }} | {{ b.koszt_razem }} |
               | Faktura (zł) | {{ a.invoice or '–' }} | {{ b.invoice or '–' }} |
               | Średnia temperatura (°C) | {{ v(a.temp_srednia) }} | {{ v(b.temp_srednia) }} |

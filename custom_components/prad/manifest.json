@@ -1,4 +1,4 @@
 {"domain":"prad","name":"Prąd – prosument (net-metering)","codeowners":["@drzejb"],"config_flow":true,
  "dependencies":["recorder","persistent_notification"],"documentation":"https://github.com/drzejb/ha-prad-prosument",
  "integration_type":"service","iot_class":"calculated","issue_tracker":"https://github.com/drzejb/ha-prad-prosument/issues",
- "requirements":["holidays>=0.60"],"single_config_entry":true,"version":"0.2.0"}
+ "requirements":["holidays>=0.60"],"single_config_entry":true,"version":"0.3.0"}
