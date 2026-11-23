@@ -2,25 +2,63 @@
   "config": {
     "step": {
       "user": {
-        "title": "Prąd - prosument",
-        "description": "Wybierz czujniki energii, które odczytuje integracja.",
+        "title": "Prąd – liczniki",
+        "description": "Wskaż liczniki energii. Dwa liczniki narastające (pobór i oddanie) albo jeden licznik netto, który rośnie przy poborze i maleje przy oddawaniu. PV i temperatura są opcjonalne.",
         "data": {
-          "import_entity": "Czujnik energii pobranej z sieci",
-          "export_entity": "Czujnik energii oddanej do sieci",
-          "pv_entity": "Czujnik produkcji PV",
-          "temperature_entity": "Czujnik temperatury zewnętrznej"
+          "tryb_sieci": "Licznik sieci",
+          "import_entity": "Energia pobrana z sieci",
+          "export_entity": "Energia oddana do sieci",
+          "net_entity": "Licznik netto",
+          "pv_entity": "Produkcja PV (opcjonalnie)",
+          "temperature_entity": "Temperatura zewnętrzna (opcjonalnie)"
+        }
+      },
+      "taryfa": {
+        "title": "Taryfa i opust",
+        "description": "Wybierz taryfę i współczynnik opustu. Ceny uzupełnisz potem w Konfiguruj → Cenniki.",
+        "data": {
+          "rozklad": "Taryfa i godziny stref",
+          "opust": "Współczynnik opustu",
+          "opust_inny": "Inny współczynnik (0–1)"
+        }
+      },
+      "strefy": {
+        "title": "Własne godziny taniej strefy",
+        "description": "Pełne godziny 0–23. Przedział może przechodzić przez północ (22 → 6). Godziny G12 różnią się między operatorami i latami – wpisz je z umowy albo taryfy.",
+        "data": {
+          "tanie1_od": "Tania 1 – od godziny",
+          "tanie1_do": "Tania 1 – do godziny",
+          "tanie2_od": "Tania 2 – od godziny",
+          "tanie2_do": "Tania 2 – do godziny",
+          "tanie3_od": "Tania 3 – od godziny",
+          "tanie3_do": "Tania 3 – do godziny",
+          "weekend": "Sobota i niedziela",
+          "swieta": "Święta"
         }
       }
     },
+    "error": {
+      "grid_required_dwa": "Wskaż licznik energii pobranej i licznik energii oddanej.",
+      "grid_required_netto": "Wskaż licznik netto.",
+      "not_energy": "Wybierz licznik energii (kWh)",
+      "net_state_class": "Licznik netto musi mieć state_class: total (total_increasing traktuje spadek jako reset).",
+      "ratio_required": "Podaj współczynnik.",
+      "zones_invalid": "{blad}"
+    },
     "abort": {
       "single_instance_allowed": "Dozwolony jest tylko jeden wpis Prąd."
+    },
+    "create_entry": {
+      "default": "Uzupełnij ceny w Konfiguruj → Cenniki."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Odbiorniki",
+        "title": "Prąd – ustawienia",
         "menu_options": {
+          "cenniki": "Cenniki",
+          "instalacja": "Instalacja",
           "add_consumer": "Dodaj odbiornik",
           "remove_consumer": "Usuń odbiornik",
           "finish": "Zakończ"
@@ -38,10 +76,63 @@
         "data": {
           "remove": "Odbiornik"
         }
+      },
+      "instalacja": {
+        "title": "Instalacja",
+        "menu_options": {
+          "opust": "Współczynnik opustu",
+          "liczniki": "Liczniki"
+        }
+      },
+      "liczniki": {
+        "title": "Liczniki",
+        "description": "Zmiana licznika nie kasuje historii, magazynu ani faktur. Godzina zmiany licznika nie zostanie policzona.",
+        "data": {
+          "tryb_sieci": "Licznik sieci",
+          "import_entity": "Energia pobrana z sieci",
+          "export_entity": "Energia oddana do sieci",
+          "net_entity": "Licznik netto",
+          "pv_entity": "Produkcja PV (opcjonalnie)",
+          "temperature_entity": "Temperatura zewnętrzna (opcjonalnie)"
+        }
       }
     },
     "error": {
-      "invalid_name": "Nazwa jest pusta albo już zajęta."
+      "invalid_name": "Nazwa jest pusta albo już zajęta.",
+      "grid_required_dwa": "Wskaż licznik energii pobranej i licznik energii oddanej.",
+      "grid_required_netto": "Wskaż licznik netto.",
+      "not_energy": "Wybierz licznik energii (kWh)",
+      "net_state_class": "Licznik netto musi mieć state_class: total (total_increasing traktuje spadek jako reset).",
+      "ratio_required": "Podaj współczynnik.",
+      "zones_invalid": "{blad}"
+    }
+  },
+  "selector": {
+    "tryb_sieci": {
+      "options": {
+        "dwa": "Dwa liczniki: pobór i oddanie",
+        "netto": "Jeden licznik netto"
+      }
+    },
+    "rozklad": {
+      "options": {
+        "tauron_g12w": "G12w – godziny Tauron (13–15, 22–6, weekendy i święta tanie)",
+        "g11": "G11 – jedna cena całą dobę",
+        "wlasne_g12": "G12 – własne godziny",
+        "wlasne_g12w": "G12w – własne godziny"
+      }
+    },
+    "weekend": {
+      "options": {
+        "tania": "Cała doba tania",
+        "robocze": "Jak dni robocze"
+      }
+    },
+    "swieta": {
+      "options": {
+        "weekend": "Jak weekend",
+        "robocze": "Jak dni robocze"
+      }
     }
   },
   "services": {
