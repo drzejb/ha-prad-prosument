@@ -1,4 +1,5 @@
 """Store and config entry migration from v0.2."""
+import asyncio
 import copy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -127,3 +128,26 @@ async def test_number_edits_version_valid_today_without_reload(hass, freezer):
     await hass.services.async_call("number", "set_value", {"entity_id": "number.prad_wspolczynnik_opustu", "value": 0.7}, blocking=True)
     await hass.services.async_call("text", "set_value", {"entity_id": "text.prad_wersja_cennika", "value": "Mój cennik"}, blocking=True)
     assert c.opust[0].wspolczynnik == Decimal("0.7") and c.prices[0].nazwa == "Mój cennik" and entry.runtime_data is c
+
+async def test_store_payload_without_state_keeps_file(hass, hass_storage, freezer):
+    freezer.move_to("2026-11-23 12:00:00+01:00")
+    bad = {"settings": v02_payload()["settings"]}
+    _store(hass_storage, bad)
+    entry, ok = await _setup(hass, minor_version=1)
+    assert not ok and entry.state is ConfigEntryState.SETUP_ERROR
+    assert hass_storage["prad"]["data"] == bad and hass_storage["prad"]["minor_version"] == 1
+
+async def test_concurrent_number_edits_are_both_kept(hass, freezer):
+    freezer.move_to("2026-11-23 12:00:00+01:00")
+    entry = MockConfigEntry(domain=DOMAIN, data={**V02_DATA, "tryb_sieci": "dwa"}, options={"consumers": []}, version=1, minor_version=2)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    c = entry.runtime_data
+    await asyncio.gather(
+        hass.services.async_call("number", "set_value", {"entity_id": "number.prad_energia_droga", "value": 0.7}, blocking=True),
+        hass.services.async_call("number", "set_value", {"entity_id": "number.prad_energia_tania", "value": 0.5}, blocking=True),
+        hass.services.async_call("number", "set_value", {"entity_id": "number.prad_vat", "value": 8}, blocking=True),
+    )
+    assert c.prices[0].energy_peak == Decimal("0.7") and c.prices[0].energy_offpeak == Decimal("0.5")
+    assert c.prices[0].vat_percent == Decimal("8")

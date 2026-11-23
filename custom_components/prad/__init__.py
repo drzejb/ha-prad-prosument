@@ -39,7 +39,10 @@ async def async_migrate_entry(hass, entry) -> bool:
         old = registry.async_get_entity_id("number", DOMAIN, "prad_bezpiecznik_fox")
         # Only the untouched default id is renamed; a manually changed id stays as it is.
         if old == "number.prad_bezpiecznik_fox" and registry.async_get("number.prad_bezpiecznik_siec") is None:
-            registry.async_update_entity(old, new_entity_id="number.prad_bezpiecznik_siec")
+            try:
+                registry.async_update_entity(old, new_entity_id="number.prad_bezpiecznik_siec")
+            except ValueError:
+                _LOGGER.warning("Could not rename %s to number.prad_bezpiecznik_siec, keeping it", old)
         hass.config_entries.async_update_entry(entry, data=data, minor_version=2)
     return True
 
