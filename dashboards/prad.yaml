@@ -122,9 +122,11 @@ views:
             span: { end: month }
             yaxis:
               - id: zl
+                min: 0
                 decimals: 0
               - id: kwh
                 opposite: true
+                min: 0
                 decimals: 0
               - id: temp
                 show: false
@@ -152,6 +154,9 @@ views:
             header: { show: true, title: kWh na stopniodzień }
             graph_span: 365d
             span: { end: month }
+            yaxis:
+              - min: 0
+                decimals: 1
             series:
               - entity: sensor.prad_historia
                 name: kWh/°C·d
