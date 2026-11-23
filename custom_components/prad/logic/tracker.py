@@ -45,8 +45,15 @@ def advance(
     now: datetime,
     values: tuple[float, ...] | None,
     limit_per_hour: float,
+    *,
+    signed: bool = False,
+    limit_negative: float | None = None,
 ) -> AdvanceResult:
-    """Advance the tracker to `now`, splitting any gap equally into full hours."""
+    """Advance the tracker to `now`, splitting any gap equally into full hours.
+
+    With `signed=True` (a single net meter) a negative delta is valid; it is rejected only when
+    it exceeds `n * limit_negative` (default `limit_per_hour`) in absolute value.
+    """
     if values is None:
         return AdvanceResult((), False, None, ref)
 
@@ -64,10 +71,15 @@ def advance(
     diffs = tuple(v - r for v, r in zip(values, ref.values))
     new_ref = TrackerRef(t, values)
 
-    if any(d < 0 for d in diffs):
-        return AdvanceResult((), True, "negative", new_ref)
-    if any(d > n * limit_per_hour for d in diffs):
-        return AdvanceResult((), True, "over_limit", new_ref)
+    if signed:
+        neg_limit = limit_per_hour if limit_negative is None else limit_negative
+        if any(d > n * limit_per_hour or d < -n * neg_limit for d in diffs):
+            return AdvanceResult((), True, "over_limit", new_ref)
+    else:
+        if any(d < 0 for d in diffs):
+            return AdvanceResult((), True, "negative", new_ref)
+        if any(d > n * limit_per_hour for d in diffs):
+            return AdvanceResult((), True, "over_limit", new_ref)
 
     per_hour = tuple(d / n for d in diffs)
     hours = tuple(
